@@ -5,20 +5,18 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/.idea/VarBox.iml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/boxer_registry.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/boxing_var_mediapipe.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/multi_person_tracker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/punch_detector.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/score_tracker.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scorecard_generator.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/video_processor.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/color_signature.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/identity_bootstrap.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/judge_10point.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/participant_manager.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/round_timer.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/stats_aggregator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/multi_person_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/multi_person_tracker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/score_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/score_tracker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scorecard_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/scorecard_generator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/video_processor.py" beforeDir="false" afterPath="$PROJECT_DIR$/video_processor.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -35,6 +33,18 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;shem2019&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/shem2019/varbox.git&quot;,
+    &quot;accountId&quot;: &quot;5f30e533-0179-4300-bd9b-74a9f5be6fcd&quot;
+  }
+}</component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 4
 }</component>
@@ -52,11 +62,12 @@
     &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
     &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/RCA/PycharmProjects/VarBox&quot;
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/RCA/PycharmProjects/VarBox/assets&quot;
   }
 }</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="C:\Users\RCA\PycharmProjects\VarBox\assets" />
       <recent name="C:\Users\RCA\PycharmProjects\VarBox" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
@@ -107,6 +118,19 @@
       <option name="presentableId" value="Default" />
       <updated>1753782256487</updated>
     </task>
+    <task id="LOCAL-00001" summary="With person tracking">
+      <option name="closed" value="true" />
+      <created>1753952159749</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1753952159749</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="With person tracking" />
+    <option name="LAST_COMMIT_MESSAGE" value="With person tracking" />
   </component>
 </project>
