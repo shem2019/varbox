@@ -4,19 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/color_signature.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/identity_bootstrap.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/judge_10point.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/participant_manager.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/round_timer.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/stats_aggregator.py" afterDir="false" />
+    <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="Latest changes as of 9/sep/2025">
+      <change afterPath="$PROJECT_DIR$/gui_app.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/multi_person_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/multi_person_tracker.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/score_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/score_tracker.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scorecard_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/scorecard_generator.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/video_processor.py" beforeDir="false" afterPath="$PROJECT_DIR$/video_processor.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -53,18 +44,19 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.boxing_var_mediapipe.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
-    &quot;last_opened_file_path&quot;: &quot;C:/Users/RCA/PycharmProjects/VarBox/assets&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.boxing_var_mediapipe.executor": "Run",
+    "Python.gui_app.executor": "Run",
+    "Python.main.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "master",
+    "last_opened_file_path": "C:/Users/RCA/PycharmProjects/VarBox/assets"
   }
-}</component>
+}]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
       <recent name="C:\Users\RCA\PycharmProjects\VarBox\assets" />
@@ -126,11 +118,20 @@
       <option name="project" value="LOCAL" />
       <updated>1753952159749</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Latest changes as of 9/sep/2025">
+      <option name="closed" value="true" />
+      <created>1757423330646</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1757423330646</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="With person tracking" />
-    <option name="LAST_COMMIT_MESSAGE" value="With person tracking" />
+    <MESSAGE value="Latest changes as of 9/sep/2025" />
+    <option name="LAST_COMMIT_MESSAGE" value="Latest changes as of 9/sep/2025" />
   </component>
 </project>
