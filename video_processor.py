@@ -1,11 +1,12 @@
 # video_processor.py
-
+import os
 import cv2
 import mediapipe as mp
 import math
 from collections import defaultdict
+from typing import Callable, Optional
 
-from config import INPUT_VIDEO, OUTPUT_VIDEO, FRAME_RATE
+from config import FRAME_RATE
 from punch_detector import detect_punch
 from multi_person_tracker import MultiPersonPoseTracker
 from score_tracker import ScoreTracker
@@ -18,11 +19,15 @@ from judge_10point import judge_round
 POSE = mp.solutions.pose.PoseLandmark
 ROLE_COLOR = {"BLUE": (255, 80, 60), "RED": (0, 0, 255), None: (0, 255, 0)}
 
-# ---------- Tunables (safe defaults if not in config) ----------
+# ---------- Tunables (safe defaults) ----------
 SAFE_PUNCH_DIST_PX = 48          # contact threshold fallback (px), auto-scales by shoulder width
 MIN_WRIST_SPEED_PX = 2.0         # minimal wrist speed (px/frame) to count impact
 WARMUP_FRAMES = 90               # allow left/right assignment early (~3s @30fps)
 DEBUG_DRAW = False               # set True to see heuristic visuals
+
+ProgressCB = Callable[[int, int], None]  # (current_frame, total_frames)
+CancelCB   = Callable[[], bool]
+LogCB      = Callable[[str], None]
 
 # ---------- helpers ----------
 def _parse_punch_result(result):
@@ -108,16 +113,54 @@ def _warmup_assign(poses):
 # Track last wrist positions for speed check (role -> {'L': (x,y)|None, 'R': ...})
 _last_wrists = defaultdict(lambda: {"L": None, "R": None})
 
-def process_video(score_tracker: ScoreTracker):
-    cap = cv2.VideoCapture(INPUT_VIDEO)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"❌ Could not open video: {INPUT_VIDEO}")
+def process_video(
+    score_tracker: ScoreTracker,
+    input_video: str,
+    output_video: str,
+    progress_cb: Optional[ProgressCB] = None,
+    cancel_cb: Optional[CancelCB] = None,
+    log_cb: Optional[LogCB] = None
+):
+    """
+    Processes a video and writes an annotated output. Updates score_tracker in place.
 
-    fps  = int(cap.get(cv2.CAP_PROP_FPS)) or FRAME_RATE
+    Args:
+        score_tracker: ScoreTracker instance to log punches and round decisions.
+        input_video:   Path to input video file.
+        output_video:  Path to output annotated video file.
+        progress_cb:   Optional callback(current_frame, total_frames).
+        cancel_cb:     Optional callback() -> bool. If returns True, processing stops gracefully.
+        log_cb:        Optional callback(msg: str) for GUI logging.
+    """
+    def _log(msg: str):
+        if log_cb:
+            log_cb(msg)
+        else:
+            print(msg)
+
+    if not input_video or not os.path.isfile(input_video):
+        raise FileNotFoundError(f"❌ Could not open video: {input_video}")
+
+    os.makedirs(os.path.dirname(output_video) or ".", exist_ok=True)
+
+    cap = cv2.VideoCapture(input_video)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"❌ Could not open video: {input_video}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    fps_src = cap.get(cv2.CAP_PROP_FPS)
+    fps  = int(fps_src) if fps_src and fps_src > 0 else (FRAME_RATE if FRAME_RATE > 0 else 30)
+
     W    = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H    = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    out  = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H))
 
-    out = cv2.VideoWriter(OUTPUT_VIDEO, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H))
+    _log(f"▶️ Processing: {input_video}")
+    _log(f"   Resolution: {W}x{H} @ {fps} fps, Frames: {total_frames if total_frames>0 else 'unknown'}")
+    _log(f"   Writing to: {output_video}")
+
+    if progress_cb:
+        progress_cb(0, total_frames)
 
     pose_tracker = MultiPersonPoseTracker(bootstrap_frames=30)
     participants = ParticipantManager(min_color_fraction=0.03, min_sim_accept=0.30,
@@ -133,7 +176,14 @@ def process_video(score_tracker: ScoreTracker):
     score_tracker.metadata.setdefault("subtitle", "Automated VAR Box Scoring")
 
     frame_idx = 0
+    canceled = False
+
     while cap.isOpened():
+        if cancel_cb and cancel_cb():
+            _log("⏹ Cancel requested. Stopping gracefully...")
+            canceled = True
+            break
+
         ok, frame = cap.read()
         if not ok:
             break
@@ -149,13 +199,13 @@ def process_video(score_tracker: ScoreTracker):
         red_id  = participants.id_for_role("RED")
         blue_id = participants.id_for_role("BLUE")
 
-        # Fallback left/right assignment to avoid “no roles” gaps
+        # Fallback left/right assignment early
         if (red_id is None or blue_id is None) and frame_idx <= WARMUP_FRAMES:
             f_red, f_blue = _warmup_assign(poses)
             red_id  = red_id  if red_id  is not None else f_red
             blue_id = blue_id if blue_id is not None else f_blue
 
-        # ------------- Punch detection (ALWAYS logs; round stats only when in_round) -------------
+        # ----- Punch detection -----
         if red_id is not None and blue_id is not None and red_id in poses and blue_id in poses:
             d_red, d_blue = poses[red_id], poses[blue_id]
             k_red, k_blue = d_red["keypoints"], d_blue["keypoints"]
@@ -165,6 +215,7 @@ def process_video(score_tracker: ScoreTracker):
             have_blue = all(k in k_blue for k in need)
 
             if have_red and have_blue:
+                # NOTE: keep original timestamp approach for continuity
                 tstamp = f"{(frame_idx // fps):02}:{(frame_idx % fps):02}"
 
                 # RED -> BLUE
@@ -204,7 +255,7 @@ def process_video(score_tracker: ScoreTracker):
                         if p and q:
                             cv2.line(frame, p, q, col, 1)
 
-        # ------------- End-of-round -> 10-point decision (READS stats only) -------------
+        # ----- End-of-round -> 10-point decision -----
         if just_ended_round:
             rs    = stats.get_round(round_no)
             kd_r  = stats.kd[round_no]["RED"]
@@ -218,7 +269,7 @@ def process_video(score_tracker: ScoreTracker):
             cv2.putText(frame, f"Round {round_no}  |  RED {red_pts} - {blue_pts} BLUE  |  {note}",
                         (10, H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # ------------- Overlays -------------
+        # ----- Overlays -----
         for bid, data in poses.items():
             x1, y1, x2, y2 = data["box"]
             role = participants.role_for_id(bid)
@@ -261,6 +312,10 @@ def process_video(score_tracker: ScoreTracker):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 220, 255), 2)
 
         out.write(frame)
+
+        if progress_cb:
+            progress_cb(frame_idx, total_frames)
+
         if bout_over:
             break
 
@@ -272,4 +327,5 @@ def process_video(score_tracker: ScoreTracker):
     score_tracker.metadata["kd"] = stats.kd
     score_tracker.metadata["deductions"] = stats.deductions
 
-    print(f"✅ Saved: {OUTPUT_VIDEO}")
+    if not canceled:
+        _log(f"✅ Saved: {output_video}")

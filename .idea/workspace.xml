@@ -4,10 +4,15 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="Latest changes as of 9/sep/2025">
-      <change afterPath="$PROJECT_DIR$/gui_app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+    <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="Latest changes as of 11/sep/2025">
+      <change afterPath="$PROJECT_DIR$/varbox.spec" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/verify_env.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/video_processor.py" beforeDir="false" afterPath="$PROJECT_DIR$/video_processor.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -50,6 +55,8 @@
     "Python.boxing_var_mediapipe.executor": "Run",
     "Python.gui_app.executor": "Run",
     "Python.main.executor": "Run",
+    "Python.varbox.spec.executor": "Run",
+    "Python.verify_env.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
     "RunOnceActivity.git.unshallow": "true",
@@ -126,12 +133,29 @@
       <option name="project" value="LOCAL" />
       <updated>1757423330646</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="Latest changes as of 11/sep/2025">
+      <option name="closed" value="true" />
+      <created>1757577724475</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1757577724475</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Latest changes as of 11/sep/2025">
+      <option name="closed" value="true" />
+      <created>1757580620685</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1757580620685</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="With person tracking" />
     <MESSAGE value="Latest changes as of 9/sep/2025" />
-    <option name="LAST_COMMIT_MESSAGE" value="Latest changes as of 9/sep/2025" />
+    <MESSAGE value="Latest changes as of 11/sep/2025" />
+    <option name="LAST_COMMIT_MESSAGE" value="Latest changes as of 11/sep/2025" />
   </component>
 </project>

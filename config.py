@@ -1,24 +1,27 @@
 # config.py
-import os
+import os, sys
+
+# --- Runtime-overridden paths (set by GUI / CLI) ---
+INPUT_VIDEO: str | None = None
+OUTPUT_VIDEO: str | None = None
+SCORECARD_PDF: str | None = None
+
 PUNCH_DISTANCE_THRESHOLD = 50
 COOLDOWN_FRAMES = 15
-FRAME_RATE = 30  # fallback in case video info missing
 
-INPUT_VIDEO = "assets/boxing_match.mp4"
-OUTPUT_VIDEO = "outputs/boxing_output.mp4"
-SCORECARD_PDF = "outputs/boxing_scorecard.pdf"
+# 0 = auto (use video FPS if available)
+FRAME_RATE = int(os.getenv("VARBOX_FPS_OVERRIDE", "0") or "0")
 
-
-FRAME_RATE = int(os.getenv("VARBOX_FPS_OVERRIDE","0") or "0")  # 0 = auto
+# When packaged, PyInstaller extracts bundled data to sys._MEIPASS
+_BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(__file__))
 
 # detection backend & model assets
-ASSETS_DIR = os.getenv("VARBOX_ASSETS", os.path.join(os.path.dirname(__file__), "assets"))
+ASSETS_DIR = os.getenv("VARBOX_ASSETS", os.path.join(_BASE_DIR, "assets"))
 BACKEND = os.getenv("VARBOX_BACKEND", "opencv")  # "opencv" or "yolov8"
 
-# OpenCV-DNN (Lite) person detector files (you will ship these with the app)
+# OpenCV-DNN person detector files (shipped with app)
 DNN_PROTO = os.getenv("VARBOX_SSD_PROTO", os.path.join(ASSETS_DIR, "models", "mobilenet_ssd", "deploy.prototxt"))
 DNN_MODEL = os.getenv("VARBOX_SSD_MODEL", os.path.join(ASSETS_DIR, "models", "mobilenet_ssd", "deploy.caffemodel"))
 
-# YOLOv8 weights (Pro build)
+# YOLOv8 weights (optional; only if you actually use YOLO)
 YOLOV8_WEIGHTS = os.getenv("VARBOX_YOLOV8_WEIGHTS", os.path.join(ASSETS_DIR, "models", "yolov8n.pt"))
-

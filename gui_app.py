@@ -1,246 +1,251 @@
-# gui_app.py  — VAR Box Desktop (PySide6)
-import os, sys, time, tempfile, datetime, cv2
-from dataclasses import dataclass
-from typing import Optional
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QIcon, QDragEnterEvent, QDropEvent, QAction
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QFileDialog, QMainWindow, QLabel, QPushButton,
-    QVBoxLayout, QHBoxLayout, QFrame, QTextEdit, QComboBox, QProgressBar,
-    QSpinBox, QMessageBox
-)
+# video_processor.py  (drop-in)
+import cv2
+import mediapipe as mp
+import math
+from collections import defaultdict
 
-# your pipeline
+import config as cfg   # <-- import the module, not the names
+from punch_detector import detect_punch
+from multi_person_tracker import MultiPersonPoseTracker
 from score_tracker import ScoreTracker
-from video_processor import process_video
-from scorecard_generator import generate_scorecard
+from participant_manager import ParticipantManager
 
-APP_TITLE = "VAR Box"
-# --- theme colors ---
-PRIMARY = "#0ea5e9"; PRIMARY_DARK = "#0369a1"
-BG = "#0b1220"; CARD = "#111827"; TEXT = "#e5e7eb"
-SUBTEXT = "#9ca3af"; BORDER = "#1f2937"
+from round_timer import RoundTimer
+from stats_aggregator import StatsAggregator
+from judge_10point import judge_round
 
-APP_QSS = f"""
-QMainWindow {{ background-color:{BG}; color:{TEXT}; }}
-QLabel {{ color:{TEXT}; font-size:14px; }}
-QTextEdit {{ background:{CARD}; color:{TEXT}; border:1px solid {BORDER}; border-radius:10px; padding:8px; font-family:Consolas,Menlo,monospace; font-size:12px; }}
-QPushButton {{ background:{PRIMARY}; color:white; border:none; border-radius:10px; padding:10px 14px; font-weight:600; }}
-QPushButton:hover {{ background:{PRIMARY_DARK}; }}
-QPushButton#ghost {{ background:transparent; border:1px solid {BORDER}; }}
-QFrame#card {{ background:{CARD}; border:1px solid {BORDER}; border-radius:16px; }}
-QComboBox, QSpinBox {{ background:{CARD}; color:{TEXT}; border:1px solid {BORDER}; border-radius:8px; padding:6px 8px; }}
-QProgressBar {{ background:{CARD}; color:{TEXT}; border:1px solid {BORDER}; border-radius:8px; text-align:center; }}
-QProgressBar::chunk {{ background:{PRIMARY}; border-radius:8px; }}
-"""
+POSE = mp.solutions.pose.PoseLandmark
+ROLE_COLOR = {"BLUE": (255, 80, 60), "RED": (0, 0, 255), None: (0, 255, 0)}
 
-def ts(): return datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-def human_path(p): return p if len(p)<80 else f"...{p[-77:]}"
+# ---------- Tunables ----------
+SAFE_PUNCH_DIST_PX = 48
+MIN_WRIST_SPEED_PX = 2.0
+WARMUP_FRAMES = 90
+DEBUG_DRAW = False
 
-@dataclass
-class RunConfig:
-    backend: str = "opencv"       # "opencv" (Lite) or "yolov8" (Pro)
-    input_path: Optional[str] = None
-    use_camera: bool = False
-    camera_index: int = 0
-    camera_seconds: int = 60
-    fps_override: Optional[int] = None
-    output_video: Optional[str] = None
-    output_pdf: Optional[str] = None
+def _euclid(a, b):
+    ax, ay = a; bx, by = b
+    return math.hypot(ax - bx, ay - by)
 
-# -------- Worker (thread) --------
-class PipelineWorker(QThread):
-    progress = Signal(str)
-    done = Signal(str, str)   # video_path, pdf_path
-    error = Signal(str)
+def _shoulder_scale(kpts):
+    if POSE.LEFT_SHOULDER in kpts and POSE.RIGHT_SHOULDER in kpts:
+        return _euclid(kpts[POSE.LEFT_SHOULDER], kpts[POSE.RIGHT_SHOULDER])
+    return 0.0
 
-    def __init__(self, cfg: RunConfig, parent=None):
-        super().__init__(parent); self.cfg = cfg
+def _parse_punch_result(result):
+    landed, hand = False, "ANY"
+    if isinstance(result, bool):
+        landed = result
+    elif isinstance(result, tuple) and len(result) >= 1:
+        landed = bool(result[0])
+        hand = ("ANY" if len(result) < 2 or result[1] is None else str(result[1]).upper())
+    elif isinstance(result, dict):
+        landed = bool(result.get("landed", False))
+        h = result.get("hand", "ANY")
+        hand = "ANY" if h is None else str(h).upper()
+    if hand not in ("L", "R", "ANY"):
+        hand = "ANY"
+    return landed, hand
 
-    def run(self):
-        try:
-            self.progress.emit("Preparing…")
+def _safe_detect_punch(attacker_k, head_xy, last_wrists, role):
+    lw = attacker_k.get(POSE.LEFT_WRIST)
+    rw = attacker_k.get(POSE.RIGHT_WRIST)
+    if lw is None and rw is None:
+        return False, "ANY"
 
-            # Select input (file or camera capture to temp)
-            if self.cfg.use_camera:
-                self.progress.emit(f"Recording camera #{self.cfg.camera_index} for {self.cfg.camera_seconds}s…")
-                tmpdir = tempfile.mkdtemp(prefix="varbox_")
-                tmp_input = os.path.join(tmpdir, f"camera_{ts()}.mp4")
-                self._record_camera(self.cfg.camera_index, self.cfg.camera_seconds, tmp_input)
-                input_path = tmp_input
-            else:
-                if not self.cfg.input_path or not os.path.isfile(self.cfg.input_path):
-                    raise RuntimeError("No valid input video selected.")
-                input_path = self.cfg.input_path
+    scale = max(_shoulder_scale(attacker_k), 1.0)
+    thr = max(SAFE_PUNCH_DIST_PX, 0.6 * scale)
 
-            base = os.path.splitext(os.path.basename(input_path))[0]
-            out_video = self.cfg.output_video or os.path.abspath(f"{base}_scored_{ts()}.mp4")
-            out_pdf   = self.cfg.output_pdf   or os.path.abspath(f"{base}_scorecard_{ts()}.pdf")
+    best_hand, best_dist, moving = "ANY", 1e9, False
+    for hand_key, w in (("L", lw), ("R", rw)):
+        if w is None:
+            continue
+        d = _euclid(w, head_xy)
+        last = last_wrists[role][hand_key]
+        spd = 0.0 if last is None else _euclid(w, last)
+        if d < best_dist:
+            best_dist = d
+            best_hand = hand_key
+            moving = spd >= MIN_WRIST_SPEED_PX
 
-            # ---- Configure env for the pipeline & backend ----
-            os.environ["VARBOX_INPUT"] = input_path
-            os.environ["VARBOX_OUTPUT"] = out_video
-            os.environ["VARBOX_PDF"] = out_pdf
-            os.environ["VARBOX_BACKEND"] = self.cfg.backend  # "opencv" or "yolov8"
-            if self.cfg.fps_override: os.environ["VARBOX_FPS_OVERRIDE"] = str(self.cfg.fps_override)
+    landed = (best_dist <= thr) and moving
+    return landed, (best_hand if landed else "ANY")
 
-            # Optional: model paths (must exist in assets when packaged)
-            # These are read by config.py or MultiPersonPoseTracker
-            assets = os.path.join(os.path.dirname(__file__), "assets")
-            os.environ.setdefault("VARBOX_ASSETS", assets)
-            os.environ.setdefault("VARBOX_SSD_PROTO", os.path.join(assets, "models", "mobilenet_ssd", "deploy.prototxt"))
-            os.environ.setdefault("VARBOX_SSD_MODEL", os.path.join(assets, "models", "mobilenet_ssd", "deploy.caffemodel"))
-            os.environ.setdefault("VARBOX_YOLOV8_WEIGHTS", os.path.join(assets, "models", "yolov8n.pt"))
+def _warmup_assign(poses):
+    if len(poses) < 2:
+        return None, None
+    center_x = []
+    for bid, d in poses.items():
+        x1, y1, x2, y2 = d["box"]
+        center_x.append(((x1 + x2) // 2, bid))
+    center_x.sort(key=lambda t: t[0])
+    red_id = center_x[0][1]
+    blue_id = center_x[-1][1]
+    if red_id == blue_id:
+        return None, None
+    return red_id, blue_id
 
-            self.progress.emit(f"Backend: {self.cfg.backend.upper()} | Running model…")
-            tracker = ScoreTracker()
-            tracker.metadata = {"title":"Boxing Match Scorecard", "subtitle":f"Source: {os.path.basename(input_path)}"}
+_last_wrists = defaultdict(lambda: {"L": None, "R": None})
 
-            process_video(tracker)
+def process_video(score_tracker: ScoreTracker):
+    # --- Read config dynamically so GUI changes take effect ---
+    input_path = cfg.INPUT_VIDEO
+    output_path = cfg.OUTPUT_VIDEO
+    cap = cv2.VideoCapture(input_path)
 
-            self.progress.emit("Generating scorecard PDF…")
-            pdf_path = ""
-            try:
-                generate_scorecard(tracker, out_pdf)
-                pdf_path = out_pdf
-            except Exception as e:
-                self.progress.emit(f"PDF warning: {e}")
+    if not cap.isOpened():
+        # Help debug: print absolute path too
+        abs_p = input_path if input_path is None else str(cv2.os.path.abspath(input_path)) if hasattr(cv2, "os") else input_path
+        raise FileNotFoundError(f"❌ Could not open video: {input_path} (abs: {abs_p})")
 
-            self.done.emit(out_video, pdf_path)
-        except Exception as e:
-            self.error.emit(str(e))
+    fps  = int(cap.get(cv2.CAP_PROP_FPS)) or (cfg.FRAME_RATE or 30)
+    W    = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    H    = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if W <= 0 or H <= 0:
+        # fallback if metadata missing
+        W, H = 1280, 720
 
-    def _record_camera(self, index: int, seconds: int, out_path: str):
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not cap.isOpened(): raise RuntimeError(f"Cannot open camera index {index}")
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-        H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-        out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
-        t0 = time.time()
-        while time.time() - t0 < seconds:
-            ok, frame = cap.read()
-            if not ok: break
-            out.write(frame)
-        cap.release(); out.release()
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (W, H))
 
-# -------- UI pieces --------
-class DropLabel(QLabel):
-    fileSelected = Signal(str)
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.setAcceptDrops(True); self.setAlignment(Qt.AlignCenter); self.setMinimumHeight(140)
-        self.setStyleSheet(f"QLabel {{ background:{CARD}; border:2px dashed {BORDER}; border-radius:14px; color:{SUBTEXT}; font-size:14px; }}")
-    def dragEnterEvent(self, e: QDragEnterEvent):
-        if e.mimeData().hasUrls(): e.acceptProposedAction()
-    def dropEvent(self, e: QDropEvent):
-        for url in e.mimeData().urls():
-            p = url.toLocalFile()
-            if os.path.isfile(p):
-                self.fileSelected.emit(p); return
+    pose_tracker = MultiPersonPoseTracker(bootstrap_frames=30)
+    participants = ParticipantManager(min_color_fraction=0.03, min_sim_accept=0.30,
+                                      smooth_alpha=0.12, max_missing_frames=45,
+                                      freeze_anchors_after_seed=True)
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle(APP_TITLE); self.setWindowIcon(QIcon()); self.resize(980, 720); self.setStyleSheet(APP_QSS)
-        self.cfg = RunConfig(); self.worker: Optional[PipelineWorker] = None
-        self._build()
+    timer = RoundTimer(fps=fps, round_secs=180, rest_secs=60, total_rounds=12)
+    stats = StatsAggregator(total_rounds=12)
 
-    def _build(self):
-        header = QFrame(); header.setObjectName("card"); hb = QHBoxLayout(header); hb.setContentsMargins(16,12,16,12)
-        title = QLabel("VAR Box"); title.setStyleSheet("font-size:22px; font-weight:800;")
-        subtitle = QLabel("AI-assisted boxing judging — load a video or record from camera, then run & export.")
-        subtitle.setStyleSheet(f"color:{SUBTEXT}; font-size:12px;")
-        left = QVBoxLayout(); left.addWidget(title); left.addWidget(subtitle); hb.addLayout(left); hb.addStretch(1)
+    score_tracker.metadata.setdefault("title", "Boxing Match Scorecard")
+    score_tracker.metadata.setdefault("subtitle", f"Source: {input_path}")
 
-        src = QFrame(); src.setObjectName("card")
-        sv = QVBoxLayout(src); sv.setContentsMargins(16,16,16,16)
-        self.drop = DropLabel("Drop a video here (MP4/MOV/AVI)…"); self.drop.fileSelected.connect(self._set_video); sv.addWidget(self.drop)
+    frame_idx = 0
+    while cap.isOpened():
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frame_idx += 1
 
-        r1 = QHBoxLayout()
-        self.btn_browse = QPushButton("Browse Video"); self.btn_browse.clicked.connect(self._browse)
-        self.btn_camera = QPushButton("Use Camera"); self.btn_camera.setObjectName("ghost"); self.btn_camera.clicked.connect(self._toggle_cam)
-        r1.addWidget(self.btn_browse); r1.addWidget(self.btn_camera); sv.addLayout(r1)
+        round_no, in_round, just_ended_round, bout_over = timer.step()
 
-        r2 = QHBoxLayout()
-        self.cb_backend = QComboBox(); self.cb_backend.addItems(["Lite (OpenCV-DNN)", "Pro (YOLOv8)"]); self.cb_backend.setCurrentIndex(0)
-        self.cb_cam_index = QComboBox(); self.cb_cam_index.addItems([str(i) for i in range(0,6)]); self.cb_cam_index.setEnabled(False)
-        self.spn_secs = QSpinBox(); self.spn_secs.setRange(5, 3600); self.spn_secs.setValue(60); self.spn_secs.setEnabled(False)
-        r2.addWidget(QLabel("Backend")); r2.addWidget(self.cb_backend)
-        r2.addSpacing(16)
-        r2.addWidget(QLabel("Camera Index")); r2.addWidget(self.cb_cam_index)
-        r2.addSpacing(16)
-        r2.addWidget(QLabel("Record (sec)")); r2.addWidget(self.spn_secs)
-        r2.addStretch(1)
-        sv.addLayout(r2)
+        poses = pose_tracker.process_frame(frame, frame_idx)
+        participants.update(frame, poses)
+        red_id  = participants.id_for_role("RED")
+        blue_id = participants.id_for_role("BLUE")
 
-        opts = QHBoxLayout()
-        self.spn_fps = QSpinBox(); self.spn_fps.setRange(0, 240); self.spn_fps.setValue(0)
-        opts.addWidget(QLabel("FPS override (0=auto)")); opts.addWidget(self.spn_fps); opts.addStretch(1)
-        sv.addLayout(opts)
+        if (red_id is None or blue_id is None) and frame_idx <= WARMUP_FRAMES:
+            f_red, f_blue = _warmup_assign(poses)
+            red_id  = red_id  if red_id  is not None else f_red
+            blue_id = blue_id if blue_id is not None else f_blue
 
-        act = QFrame(); act.setObjectName("card")
-        av = QVBoxLayout(act); av.setContentsMargins(16,16,16,16)
-        self.lbl_sel = QLabel("Selected: —"); self.lbl_sel.setStyleSheet(f"color:{SUBTEXT};")
-        self.btn_run = QPushButton("Run Model"); self.btn_run.clicked.connect(self._run)
-        self.btn_open = QPushButton("Open Output Folder"); self.btn_open.setObjectName("ghost"); self.btn_open.clicked.connect(self._open_out)
-        rr = QHBoxLayout(); rr.addWidget(self.btn_run); rr.addWidget(self.btn_open); rr.addStretch(1)
-        self.progress = QProgressBar(); self.progress.setRange(0,0); self.progress.setVisible(False)
-        av.addWidget(self.lbl_sel); av.addLayout(rr); av.addWidget(self.progress)
+        if red_id is not None and blue_id is not None and red_id in poses and blue_id in poses:
+            d_red, d_blue = poses[red_id], poses[blue_id]
+            k_red, k_blue = d_red["keypoints"], d_blue["keypoints"]
+            need = [POSE.LEFT_WRIST, POSE.RIGHT_WRIST, POSE.NOSE]
+            have_red  = all(k in k_red  for k in need)
+            have_blue = all(k in k_blue for k in need)
 
-        log = QFrame(); log.setObjectName("card")
-        lv = QVBoxLayout(log); lv.setContentsMargins(16,16,16,16)
-        self.txt = QTextEdit(readOnly=True); self.txt.setPlaceholderText("Logs will appear here…"); lv.addWidget(self.txt)
+            if have_red and have_blue:
+                tstamp = f"{(frame_idx // fps):02}:{(frame_idx % fps):02}"
 
-        root = QWidget(); rv = QVBoxLayout(root); rv.setContentsMargins(14,14,14,14); rv.setSpacing(12)
-        rv.addWidget(header); rv.addWidget(src); rv.addWidget(act); rv.addWidget(log, 1)
-        self.setCentralWidget(root)
+                # RED -> BLUE
+                red_att = {"left_wrist": k_red[POSE.LEFT_WRIST], "right_wrist": k_red[POSE.RIGHT_WRIST], "head": k_red[POSE.NOSE]}
+                blue_head = k_blue[POSE.NOSE]
+                landed, hand = _parse_punch_result(detect_punch(red_att, blue_head))
+                if not landed:
+                    landed, hand = _safe_detect_punch(k_red, blue_head, _last_wrists, "RED")
+                if landed:
+                    accepted = score_tracker.update(frame_idx, fighter_id="RED", timestamp=tstamp, hand=hand)
+                    if accepted and in_round:
+                        stats.add_punch("RED", round_no)
 
-        act_quit = QAction("Quit", self); act_quit.triggered.connect(self.close)
-        self.menuBar().addAction(act_quit)
+                # BLUE -> RED
+                blue_att = {"left_wrist": k_blue[POSE.LEFT_WRIST], "right_wrist": k_blue[POSE.RIGHT_WRIST], "head": k_blue[POSE.NOSE]}
+                red_head = k_red[POSE.NOSE]
+                landed, hand = _parse_punch_result(detect_punch(blue_att, red_head))
+                if not landed:
+                    landed, hand = _safe_detect_punch(k_blue, red_head, _last_wrists, "BLUE")
+                if landed:
+                    accepted = score_tracker.update(frame_idx, fighter_id="BLUE", timestamp=tstamp, hand=hand)
+                    if accepted and in_round:
+                        stats.add_punch("BLUE", round_no)
 
-    # --- helpers ---
-    def _log(self, s): self.txt.append(s)
-    def _set_video(self, p): self.cfg.input_path=p; self.cfg.use_camera=False; self.cb_cam_index.setEnabled(False); self.spn_secs.setEnabled(False); self.lbl_sel.setText(f"Selected: {human_path(p)}"); self._log(f"Video: {p}")
-    def _browse(self):
-        p,_=QFileDialog.getOpenFileName(self,"Choose Video","", "Videos (*.mp4 *.mov *.avi *.mkv);;All files (*.*)")
-        if p: self._set_video(p)
-    def _toggle_cam(self):
-        self.cfg.use_camera = not self.cfg.use_camera
-        on = self.cfg.use_camera; self.cb_cam_index.setEnabled(on); self.spn_secs.setEnabled(on)
-        self.lbl_sel.setText("Selected: Camera" if on else "Selected: —"); self._log("Camera ON" if on else "Camera OFF")
+                # update last wrists
+                if POSE.LEFT_WRIST in k_red:   _last_wrists["RED"]["L"]  = k_red[POSE.LEFT_WRIST]
+                if POSE.RIGHT_WRIST in k_red:  _last_wrists["RED"]["R"]  = k_red[POSE.RIGHT_WRIST]
+                if POSE.LEFT_WRIST in k_blue:  _last_wrists["BLUE"]["L"] = k_blue[POSE.LEFT_WRIST]
+                if POSE.RIGHT_WRIST in k_blue: _last_wrists["BLUE"]["R"] = k_blue[POSE.RIGHT_WRIST]
 
-    def _run(self):
-        if not self.cfg.use_camera and not self.cfg.input_path:
-            QMessageBox.warning(self,"VAR Box","Pick a video or enable camera."); return
-        self.cfg.backend = "opencv" if self.cb_backend.currentIndex()==0 else "yolov8"
-        self.cfg.camera_index = int(self.cb_cam_index.currentText())
-        self.cfg.camera_seconds = int(self.spn_secs.value())
-        self.cfg.fps_override = int(self.spn_fps.value()) or None
-        self.btn_run.setEnabled(False); self.progress.setVisible(True); self.txt.clear(); self._log("Starting…")
-        self.worker = PipelineWorker(self.cfg); self.worker.progress.connect(self._log); self.worker.done.connect(self._done); self.worker.error.connect(self._err); self.worker.start()
+                if DEBUG_DRAW:
+                    for p, q, col in [(k_red.get(POSE.LEFT_WRIST),  blue_head, (0, 0, 255)),
+                                      (k_red.get(POSE.RIGHT_WRIST), blue_head, (0, 0, 255)),
+                                      (k_blue.get(POSE.LEFT_WRIST), red_head, (255, 80, 60)),
+                                      (k_blue.get(POSE.RIGHT_WRIST),red_head,(255, 80, 60))]:
+                        if p and q:
+                            cv2.line(frame, p, q, col, 1)
 
-    def _done(self, video_path, pdf_path):
-        self.progress.setVisible(False); self.btn_run.setEnabled(True)
-        self._log(f"✅ Finished.\nVideo: {video_path}\nPDF: {pdf_path or '(not generated)'}")
-        QMessageBox.information(self,"VAR Box","Processing complete!")
+        if just_ended_round:
+            rs    = stats.get_round(round_no)
+            kd_r  = stats.kd[round_no]["RED"]
+            kd_b  = stats.kd[round_no]["BLUE"]
+            ded_r = stats.deductions[round_no]["RED"]
+            ded_b = stats.deductions[round_no]["BLUE"]
+            red_pts, blue_pts, note = judge_round(rs, kd_red=kd_r, kd_blue=kd_b, ded_red=ded_r, ded_blue=ded_b)
+            score_tracker.add_round_points(round_no, red_pts, blue_pts, note)
 
-    def _err(self, err):
-        self.progress.setVisible(False); self.btn_run.setEnabled(True)
-        self._log(f"❌ Error: {err}"); QMessageBox.critical(self,"VAR Box — Error",err)
+            cv2.rectangle(frame, (0, H - 40), (W, H), (20, 20, 20), -1)
+            cv2.putText(frame, f"Round {round_no}  |  RED {red_pts} - {blue_pts} BLUE  |  {note}",
+                        (10, H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-    def _open_out(self):
-        import re
-        text=self.txt.toPlainText(); m=re.findall(r"Video:\s*(.+)",text); target=None
-        if m:
-            v=m[-1].strip()
-            if os.path.isfile(v): target=os.path.dirname(v)
-        if not target: target=os.path.expanduser("~")
-        if sys.platform.startswith("win"): os.startfile(target)
-        elif sys.platform=="darwin": os.system(f'open "{target}"')
-        else: os.system(f'xdg-open "{target}"')
+        # overlays
+        for bid, data in poses.items():
+            x1, y1, x2, y2 = data["box"]
+            role = participants.role_for_id(bid)
+            if role is None and frame_idx <= WARMUP_FRAMES:
+                # show provisional roles too
+                if red_id == bid:  role = "RED"
+                if blue_id == bid: role = "BLUE"
+            color = ROLE_COLOR.get(role, ROLE_COLOR[None])
 
-def main():
-    app = QApplication(sys.argv); w = MainWindow(); w.show(); sys.exit(app.exec())
+            mask = data.get("mask")
+            if mask is not None:
+                try:
+                    mr = cv2.resize(mask, (x2 - x1, y2 - y1))
+                    mb = (mr > 0.1).astype('uint8') * 255
+                    m_rgb = cv2.applyColorMap(mb, cv2.COLORMAP_OCEAN)
+                    roi = frame[y1:y2, x1:x2]
+                    frame[y1:y2, x1:x2] = cv2.addWeighted(roi, 0.6, m_rgb, 0.4, 0)
+                except Exception:
+                    pass
 
-if __name__=="__main__": main()
+            p_count = score_tracker.get_score(role) if role in ("RED", "BLUE") else 0
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, f"{role or 'IGN'} | ID {bid} | P:{p_count}",
+                        (x1, max(0, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            for pt in data["keypoints"].values():
+                cv2.circle(frame, tuple(pt), 4, color, -1)
+
+        # top bar
+        cv2.rectangle(frame, (0, 0), (W, 30), (20, 20, 20), -1)
+        cv2.putText(frame, f"RED P:{score_tracker.get_score('RED')}",   (10, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, ROLE_COLOR["RED"], 2)
+        cv2.putText(frame, f"BLUE P:{score_tracker.get_score('BLUE')}", (160, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, ROLE_COLOR["BLUE"], 2)
+        if hasattr(score_tracker, "ten_point_totals"):
+            rt = score_tracker.ten_point_totals.get("RED", 0)
+            bt = score_tracker.ten_point_totals.get("BLUE", 0)
+            cv2.putText(frame, f"10pt — R:{rt} B:{bt}", (320, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 220, 255), 2)
+
+        out.write(frame)
+        if bout_over:
+            break
+
+    cap.release()
+    out.release()
+
+    score_tracker.metadata["round_stats"] = stats.round_stats
+    score_tracker.metadata["kd"] = stats.kd
+    score_tracker.metadata["deductions"] = stats.deductions
+
+    print(f"✅ Saved: {output_path}")
