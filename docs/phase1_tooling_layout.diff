@@ -1,0 +1,759 @@
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ .gitignore	2026-02-26 16:59:48.579207413 +0300
+@@ -0,0 +1,17 @@
++# Python cache/build
++__pycache__/
++*.py[cod]
++*.egg-info/
++.pytest_cache/
++.mypy_cache/
++.ruff_cache/
++
++# Virtual environments
++.venv/
++venv/
++
++# Local outputs
++output/
++
++# IDE
++.idea/
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ .pre-commit-config.yaml	2026-02-26 16:55:27.482518257 +0300
+@@ -0,0 +1,28 @@
++repos:
++  - repo: https://github.com/psf/black
++    rev: 24.10.0
++    hooks:
++      - id: black
++        args: ["--check"]
++        files: ^(src|tests)/
++
++  - repo: https://github.com/astral-sh/ruff-pre-commit
++    rev: v0.6.9
++    hooks:
++      - id: ruff
++        args: ["check", "--fix"]
++        files: ^(src|tests)/
++
++  - repo: https://github.com/pre-commit/mirrors-mypy
++    rev: v1.11.2
++    hooks:
++      - id: mypy
++        files: ^src/
++        additional_dependencies: []
++
++  - repo: https://github.com/pre-commit/pre-commit-hooks
++    rev: v5.0.0
++    hooks:
++      - id: check-yaml
++      - id: end-of-file-fixer
++      - id: trailing-whitespace
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ .github/workflows/ci.yml	2026-02-26 16:55:33.429188024 +0300
+@@ -0,0 +1,38 @@
++name: CI
++
++on:
++  push:
++  pull_request:
++
++jobs:
++  verify:
++    runs-on: ubuntu-latest
++    strategy:
++      matrix:
++        python-version: ["3.11"]
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Setup Python
++        uses: actions/setup-python@v5
++        with:
++          python-version: ${{ matrix.python-version }}
++
++      - name: Install dependencies
++        run: |
++          python -m pip install --upgrade pip
++          python -m pip install -e .[dev]
++
++      - name: Ruff
++        run: ruff check src tests
++
++      - name: Black
++        run: black --check src tests
++
++      - name: Mypy
++        run: mypy src
++
++      - name: Pytest
++        run: pytest
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ README.md	2026-02-26 16:55:42.932232608 +0300
+@@ -0,0 +1,34 @@
++# Boxing Analytics Assistant
++
++Decision-support system for boxing judging analytics. This project is **not** a referee replacement.
++
++## Mandatory Positioning
++- Assistive judging and analytics decision support only.
++- Final decisions require human judges and licensed referees.
++- Outputs are unverified without calibration and validation.
++
++## Current State
++This repository is under active refactor from legacy prototype modules into a testable package layout.
++
++## Development Setup
++```bash
++python -m pip install --upgrade pip
++python -m pip install -e .[dev]
++```
++
++## Quality Gates
++```bash
++ruff check src tests
++black --check src tests
++mypy src
++pytest
++```
++
++## Entrypoints
++- Legacy launcher: `python main.py`
++- New package CLI: `python -m boxing_analytics.app.cli --print-disclaimer`
++
++## Known Limitations (Phase 1)
++- Core production pipeline is still rooted in legacy modules at repository root.
++- Timestamp-based timeline/round infrastructure is introduced under `src/boxing_analytics/video` but not yet wired end-to-end into UI and processing.
++- Evaluation harness and calibration workflows are scaffolded and will be expanded in later phases.
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ pyproject.toml	2026-02-26 16:55:18.392469689 +0300
+@@ -0,0 +1,77 @@
++[build-system]
++requires = ["setuptools>=69.0", "wheel"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "boxing-analytics-assistant"
++version = "0.1.0"
++description = "Assistive boxing judging and analytics decision support"
++readme = "README.md"
++requires-python = ">=3.10"
++authors = [{ name = "VarBox Team" }]
++license = { text = "Proprietary" }
++dependencies = []
++
++[project.optional-dependencies]
++runtime = [
++  "numpy==1.26.4",
++  "opencv-python==4.10.0.84",
++  "mediapipe==0.10.14",
++  "PySide6-Essentials==6.7.2",
++  "scipy==1.14.1",
++  "fpdf2==2.8.1",
++]
++dev = [
++  "black==24.10.0",
++  "ruff==0.6.9",
++  "mypy==1.11.2",
++  "pytest==8.3.3",
++  "pre-commit==3.8.0",
++  "types-PyYAML==6.0.12.20240917",
++]
++
++[project.scripts]
++boxing-analytics = "boxing_analytics.app.cli:main"
++
++[tool.setuptools]
++package-dir = { "" = "src" }
++
++[tool.setuptools.packages.find]
++where = ["src"]
++
++[tool.black]
++line-length = 100
++target-version = ["py310", "py311", "py312"]
++include = "^/(src|tests)/.*\\.py$"
++
++[tool.ruff]
++line-length = 100
++target-version = "py310"
++
++[tool.ruff.lint]
++select = ["E", "F", "I", "UP", "B", "SIM"]
++ignore = ["E203"]
++
++[tool.ruff.lint.per-file-ignores]
++"tests/**/*.py" = ["S101"]
++
++[tool.mypy]
++python_version = "3.10"
++strict = true
++warn_unused_ignores = true
++warn_redundant_casts = true
++warn_unreachable = true
++mypy_path = "src"
++files = ["src"]
++exclude = [
++  "^output/",
++  "^assets/",
++]
++
++[tool.pytest.ini_options]
++addopts = "-q"
++testpaths = ["tests"]
++pythonpath = ["src"]
++markers = [
++  "integration: higher-level behavior across modules",
++]
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ docs/implementation_plan.md	2026-02-26 16:55:04.540812046 +0300
+@@ -0,0 +1,102 @@
++# Boxing Analytics Assistant Refactor Plan
++
++## Baseline
++- Baseline tag: `baseline-pre-assistive-refactor-20260226`
++- Baseline commit: `207e682`
++- Active branch: `master`
++
++## Current Entrypoints
++- `main.py` (`python main.py`) for GUI/CLI launcher.
++- `gui_app.py` (`main()`) for desktop UI.
++- `creds.py` (`main()`) unrelated credential utility.
++
++## Phased Delivery
++
++### Phase 1: Tooling and Package Layout (in progress)
++Files added/updated:
++- Add `pyproject.toml` with pinned `black`, `ruff`, `mypy`, `pytest`, `pre-commit`.
++- Add `.pre-commit-config.yaml`.
++- Add `.github/workflows/ci.yml`.
++- Add `src/boxing_analytics/` package with required subpackages:
++  - `app/`, `video/`, `calibration/`, `tracking/`, `detection/`, `scoring/`, `review/`, `eval/`
++- Add initial architecture-safe modules:
++  - `app/positioning.py` for mandatory decision-support messaging.
++  - `video/timeline.py` and `video/rounds.py` for timestamp-first round infrastructure.
++- Add initial tests under `tests/unit` and `tests/integration`.
++- Add `README.md` with setup, constraints, and known limitations.
++
++Acceptance in this phase:
++- Project can be installed in editable mode.
++- Lint, typecheck, and tests run in CI on the new `src` code path.
++- Positioning language is encoded and test-verified.
++
++### Phase 2: Timestamp Timebase and Bout Config
++Planned file changes:
++- Implement `src/boxing_analytics/video/timeline.py` decoder-backed timestamps.
++- Implement `src/boxing_analytics/video/rounds.py` timeline marker segmentation.
++- Add `src/boxing_analytics/video/capture.py` for PTS/monotonic timestamps.
++- Update `gui_app.py` to add bout presets/custom settings and round-start alignment controls.
++- Add integration test with short clip to validate FPS-invariant round boundaries.
++
++Acceptance in this phase:
++- Round boundaries derived from timestamps, not frame count.
++- FPS override does not alter round segmentation results.
++
++### Phase 3: Tracking and Identity
++Planned file changes:
++- Add new tracking stack under `src/boxing_analytics/tracking/`:
++  - detector abstraction
++  - multi-object tracker wrapper
++  - re-identification embedding service
++  - identity stability scoring and swap logging
++- Deprecate color-prior assignment as primary identity path.
++- Add referee handling and Fighter A/B mode.
++- Add tests for occlusion, re-id, and swap logging.
++
++Acceptance in this phase:
++- Identity path does not depend on red/blue histogram priors.
++- ID switch events are measurable and logged.
++
++### Phase 4: Strike and Contact Pipeline
++Planned file changes:
++- Implement `src/boxing_analytics/detection/` modules for glove state, guard state, and contact classification.
++- Implement time-based event dedup (remove FPS cooldown logic).
++- Add evidence clip generation under `src/boxing_analytics/review/clip_export.py`.
++- Add tests for landed_clean, landed_glancing, blocked, missed, clinch labels.
++
++Acceptance in this phase:
++- Every scored event has confidence and evidence clip.
++- Head/body zones are explicit classes.
++
++### Phase 5: Scoring Assistant and Review Workflow
++Planned file changes:
++- Add criteria model in `src/boxing_analytics/scoring/criteria.py`.
++- Add round model gating for 10-point proposal only when prerequisites are met.
++- Add review workflow modules and JSON audit log exporter.
++- Update UI for timeline scrub, event filters, manual corrections, ref event confirm.
++
++Acceptance in this phase:
++- System shows analytics-only mode when prerequisites for round proposals are missing.
++- All manual changes are timestamped and audit-exportable.
++
++### Phase 6: Calibration and Evaluation Harness
++Planned file changes:
++- Add OpenCV calibration tooling:
++  - `src/boxing_analytics/calibration/calibrate_camera.py`
++  - `src/boxing_analytics/calibration/models.py`
++- Add dataset schema and runner:
++  - `src/boxing_analytics/eval/schema.py`
++  - `src/boxing_analytics/eval/run.py`
++- Add toy dataset and regression tests.
++- Quarantine experimental `boxing_var_mediapipe.py` under `experiments/` and ensure it is not imported by the production pipeline.
++
++Acceptance in this phase:
++- `python -m boxing_analytics.eval.run --dataset ... --model-config ...` produces metrics.
++- Calibration profile can be loaded and status is visible in UI.
++
++## Constraints Carried Into All Phases
++- Decision support only; never referee replacement.
++- No FPS-based cooldowns.
++- No synthetic mirrored opponents.
++- No authoritative 10-point display without prerequisite event support.
++- No regression in testability; unit + integration tests required per phase.
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/__init__.py	2026-02-26 16:56:32.598217425 +0300
+@@ -0,0 +1,6 @@
++"""Core package for assistive boxing judging and analytics."""
++
++from boxing_analytics.app.positioning import full_disclaimer
++
++__all__ = ["full_disclaimer"]
++__version__ = "0.1.0"
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/app/__init__.py	2026-02-26 16:56:32.602217797 +0300
+@@ -0,0 +1,5 @@
++"""Application-level entrypoints and orchestration."""
++
++from boxing_analytics.app.positioning import full_disclaimer
++
++__all__ = ["full_disclaimer"]
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/app/cli.py	2026-02-26 16:59:02.569546077 +0300
+@@ -0,0 +1,37 @@
++"""Package CLI entrypoint for diagnostics and phased workflows."""
++
++from __future__ import annotations
++
++import argparse
++from collections.abc import Sequence
++
++from boxing_analytics.app.positioning import full_disclaimer
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(
++        prog="boxing-analytics",
++        description="Boxing analytics decision support CLI.",
++    )
++    parser.add_argument(
++        "--print-disclaimer",
++        action="store_true",
++        help="Print mandatory decision-support disclaimer.",
++    )
++    return parser
++
++
++def main(argv: Sequence[str] | None = None) -> int:
++    parser = build_parser()
++    args = parser.parse_args(argv)
++
++    if args.print_disclaimer:
++        print(full_disclaimer())
++        return 0
++
++    parser.print_help()
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/app/positioning.py	2026-02-26 16:56:32.605218076 +0300
+@@ -0,0 +1,12 @@
++"""Positioning and safety language for product surfaces."""
++
++from __future__ import annotations
++
++ASSISTIVE_NOTICE = "Assistive judging and analytics decision support only."
++HUMAN_REQUIRED_NOTICE = "Final decisions require human judges and licensed referees."
++UNVERIFIED_NOTICE = "Unverified without calibration and validation."
++
++
++def full_disclaimer() -> str:
++    """Return canonical product disclaimer text."""
++    return " ".join([ASSISTIVE_NOTICE, HUMAN_REQUIRED_NOTICE, UNVERIFIED_NOTICE])
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/calibration/__init__.py	2026-02-26 16:56:32.626220029 +0300
+@@ -0,0 +1,5 @@
++"""Calibration profiles and camera calibration tooling."""
++
++from boxing_analytics.calibration.models import CalibrationProfile
++
++__all__ = ["CalibrationProfile"]
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/calibration/calibrate_camera.py	2026-02-26 16:56:32.635220865 +0300
+@@ -0,0 +1,25 @@
++"""CLI wrapper for camera calibration execution."""
++
++from __future__ import annotations
++
++import argparse
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description="Camera calibration utility")
++    parser.add_argument("--images-glob", required=True, help="Glob pattern for chessboard images")
++    parser.add_argument("--board-cols", type=int, required=True)
++    parser.add_argument("--board-rows", type=int, required=True)
++    parser.add_argument("--square-size-mm", type=float, required=True)
++    parser.add_argument("--output", required=True, help="Calibration profile output path")
++    return parser
++
++
++def main() -> int:
++    parser = build_parser()
++    parser.parse_args()
++    raise NotImplementedError("Full calibration flow lands in Phase 6")
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/calibration/models.py	2026-02-26 16:59:02.572546261 +0300
+@@ -0,0 +1,20 @@
++"""Typed calibration model storage."""
++
++from __future__ import annotations
++
++from dataclasses import asdict, dataclass
++
++
++@dataclass(slots=True)
++class CalibrationProfile:
++    """Serialized intrinsics/extrinsics profile."""
++
++    profile_name: str
++    camera_matrix: list[list[float]]
++    dist_coeffs: list[float]
++    image_width: int
++    image_height: int
++    reprojection_error: float
++
++    def to_dict(self) -> dict[str, object]:
++        return asdict(self)
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/detection/__init__.py	2026-02-26 16:56:32.644221702 +0300
+@@ -0,0 +1 @@
++"""Strike/contact detection pipeline modules."""
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/eval/__init__.py	2026-02-26 16:56:32.674224492 +0300
+@@ -0,0 +1 @@
++"""Dataset schema and evaluation entrypoints."""
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/eval/run.py	2026-02-26 16:56:32.684225422 +0300
+@@ -0,0 +1,22 @@
++"""Evaluation harness CLI scaffold."""
++
++from __future__ import annotations
++
++import argparse
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(description="Run boxing analytics evaluation")
++    parser.add_argument("--dataset", required=True, help="Path to dataset JSON")
++    parser.add_argument("--model-config", required=True, help="Path to model config")
++    return parser
++
++
++def main() -> int:
++    parser = build_parser()
++    parser.parse_args()
++    raise NotImplementedError("Evaluation harness implementation lands in Phase 6")
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/eval/schema.py	2026-02-26 16:56:32.681225143 +0300
+@@ -0,0 +1,18 @@
++"""Typed dataset schema definitions for evaluation harness."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Literal
++
++ContactLabel = Literal["landed_clean", "landed_glancing", "blocked_guarded", "missed", "clinch"]
++TargetZone = Literal["head", "body", "unknown"]
++
++
++@dataclass(frozen=True, slots=True)
++class EventAnnotation:
++    timestamp_s: float
++    fighter_id: str
++    label: ContactLabel
++    target_zone: TargetZone
++    evidence_clip: str
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/review/__init__.py	2026-02-26 16:56:32.660223190 +0300
+@@ -0,0 +1 @@
++"""Review workflow support: timeline events, clips, and audit logs."""
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/review/audit_log.py	2026-02-26 16:56:32.667223841 +0300
+@@ -0,0 +1,16 @@
++"""Simple audit log event model for human review actions."""
++
++from __future__ import annotations
++
++from dataclasses import asdict, dataclass
++
++
++@dataclass(frozen=True, slots=True)
++class AuditEvent:
++    timestamp_s: float
++    actor: str
++    action: str
++    details: str
++
++    def to_dict(self) -> dict[str, object]:
++        return asdict(self)
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/scoring/__init__.py	2026-02-26 16:56:32.652222446 +0300
+@@ -0,0 +1 @@
++"""Scoring assistant modules for criteria-aligned analytics."""
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/tracking/__init__.py	2026-02-26 16:56:32.638221144 +0300
+@@ -0,0 +1 @@
++"""Tracking primitives for fighter identity and referee separation."""
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/video/__init__.py	2026-02-26 16:56:32.615219006 +0300
+@@ -0,0 +1,12 @@
++"""Video timebase, decoding, and round segmentation primitives."""
++
++from boxing_analytics.video.rounds import BoutConfig, RoundSegment, build_round_segments
++from boxing_analytics.video.timeline import CanonicalTimeline, TimelineMarker
++
++__all__ = [
++    "BoutConfig",
++    "CanonicalTimeline",
++    "RoundSegment",
++    "TimelineMarker",
++    "build_round_segments",
++]
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/video/rounds.py	2026-02-26 16:59:02.571546200 +0300
+@@ -0,0 +1,66 @@
++"""Round segmentation from absolute timestamps."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True, slots=True)
++class BoutConfig:
++    rounds_count: int = 12
++    round_seconds: float = 180.0
++    rest_seconds: float = 60.0
++    warmup_seconds: float = 0.0
++
++    def validate(self) -> None:
++        if self.rounds_count <= 0:
++            msg = "rounds_count must be positive"
++            raise ValueError(msg)
++        if self.round_seconds <= 0:
++            msg = "round_seconds must be positive"
++            raise ValueError(msg)
++        if self.rest_seconds < 0:
++            msg = "rest_seconds must be non-negative"
++            raise ValueError(msg)
++        if self.warmup_seconds < 0:
++            msg = "warmup_seconds must be non-negative"
++            raise ValueError(msg)
++
++
++@dataclass(frozen=True, slots=True)
++class RoundSegment:
++    round_index: int
++    start_s: float
++    end_s: float
++
++    def contains(self, timestamp_s: float) -> bool:
++        return self.start_s <= timestamp_s < self.end_s
++
++
++def build_round_segments(start_s: float, config: BoutConfig) -> list[RoundSegment]:
++    """Create timestamp-based round windows from a configured bout."""
++    config.validate()
++    if start_s < 0:
++        msg = "start_s must be non-negative"
++        raise ValueError(msg)
++
++    cursor = start_s + config.warmup_seconds
++    segments: list[RoundSegment] = []
++
++    for round_index in range(1, config.rounds_count + 1):
++        segment = RoundSegment(
++            round_index=round_index,
++            start_s=cursor,
++            end_s=cursor + config.round_seconds,
++        )
++        segments.append(segment)
++        cursor = segment.end_s + config.rest_seconds
++
++    return segments
++
++
++def round_for_timestamp(timestamp_s: float, segments: list[RoundSegment]) -> int | None:
++    for segment in segments:
++        if segment.contains(timestamp_s):
++            return segment.round_index
++    return None
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ src/boxing_analytics/video/timeline.py	2026-02-26 16:59:02.571546200 +0300
+@@ -0,0 +1,47 @@
++"""Timestamp-driven canonical timeline representation."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True, slots=True)
++class TimelineMarker:
++    """Discrete timeline marker created from UI or detector events."""
++
++    timestamp_s: float
++    label: str
++
++
++class CanonicalTimeline:
++    """Monotonic timestamp container for frames and explicit markers."""
++
++    def __init__(self) -> None:
++        self._frame_timestamps: list[float] = []
++        self._markers: list[TimelineMarker] = []
++
++    def add_frame_timestamp(self, timestamp_s: float) -> None:
++        """Add frame timestamp; enforces monotonic non-decreasing order."""
++        if timestamp_s < 0:
++            msg = "timestamp must be non-negative"
++            raise ValueError(msg)
++        if self._frame_timestamps and timestamp_s < self._frame_timestamps[-1]:
++            msg = "frame timestamps must be monotonic"
++            raise ValueError(msg)
++        self._frame_timestamps.append(timestamp_s)
++
++    def add_marker(self, marker: TimelineMarker) -> None:
++        """Add timeline marker and keep sorted by timestamp."""
++        if marker.timestamp_s < 0:
++            msg = "marker timestamp must be non-negative"
++            raise ValueError(msg)
++        self._markers.append(marker)
++        self._markers.sort(key=lambda item: item.timestamp_s)
++
++    @property
++    def frame_timestamps(self) -> list[float]:
++        return list(self._frame_timestamps)
++
++    @property
++    def markers(self) -> list[TimelineMarker]:
++        return list(self._markers)
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ tests/integration/test_cli_disclaimer.py	2026-02-26 16:56:52.217988574 +0300
+@@ -0,0 +1,14 @@
++import subprocess
++import sys
++
++
++def test_cli_prints_disclaimer() -> None:
++    proc = subprocess.run(
++        [sys.executable, "-m", "boxing_analytics.app.cli", "--print-disclaimer"],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    out = proc.stdout.lower()
++    assert "decision support" in out
++    assert "human judges" in out
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ tests/integration/test_timeline_rounds_integration.py	2026-02-26 16:56:52.219988749 +0300
+@@ -0,0 +1,17 @@
++from boxing_analytics.video.rounds import BoutConfig, build_round_segments, round_for_timestamp
++from boxing_analytics.video.timeline import CanonicalTimeline, TimelineMarker
++
++
++def test_timeline_and_rounds_integration() -> None:
++    timeline = CanonicalTimeline()
++    for timestamp_s in [0.0, 0.04, 0.08, 0.12, 0.16]:
++        timeline.add_frame_timestamp(timestamp_s)
++
++    timeline.add_marker(TimelineMarker(timestamp_s=0.0, label="round_start_manual"))
++
++    config = BoutConfig(rounds_count=3, round_seconds=2.0, rest_seconds=1.0)
++    segments = build_round_segments(start_s=timeline.markers[0].timestamp_s, config=config)
++
++    assert round_for_timestamp(0.5, segments) == 1
++    assert round_for_timestamp(2.5, segments) is None
++    assert round_for_timestamp(3.5, segments) == 2
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ tests/unit/test_positioning.py	2026-02-26 16:56:52.188986034 +0300
+@@ -0,0 +1,12 @@
++from boxing_analytics.app.positioning import full_disclaimer
++
++
++def test_disclaimer_contains_required_language() -> None:
++    text = full_disclaimer().lower()
++    assert "assistive" in text
++    assert "decision support" in text
++    assert "human judges" in text
++    assert "licensed referees" in text
++    assert "unverified" in text
++    assert "calibration" in text
++    assert "validation" in text
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ tests/unit/test_rounds.py	2026-02-26 16:56:52.195986647 +0300
+@@ -0,0 +1,19 @@
++from boxing_analytics.video.rounds import BoutConfig, build_round_segments, round_for_timestamp
++
++
++def test_round_segments_are_timestamp_based() -> None:
++    config = BoutConfig(rounds_count=2, round_seconds=180.0, rest_seconds=60.0, warmup_seconds=5.0)
++    segments = build_round_segments(start_s=10.0, config=config)
++
++    assert segments[0].start_s == 15.0
++    assert segments[0].end_s == 195.0
++    assert segments[1].start_s == 255.0
++    assert segments[1].end_s == 435.0
++
++
++def test_round_lookup_returns_none_outside_segments() -> None:
++    config = BoutConfig(rounds_count=1, round_seconds=180.0, rest_seconds=60.0)
++    segments = build_round_segments(start_s=0.0, config=config)
++
++    assert round_for_timestamp(10.0, segments) == 1
++    assert round_for_timestamp(200.0, segments) is None
+--- /dev/null	2026-02-26 10:06:22.467608892 +0300
++++ tests/unit/test_timeline.py	2026-02-26 16:56:52.191986297 +0300
+@@ -0,0 +1,18 @@
++import pytest
++
++from boxing_analytics.video.timeline import CanonicalTimeline, TimelineMarker
++
++
++def test_timeline_keeps_markers_sorted() -> None:
++    timeline = CanonicalTimeline()
++    timeline.add_marker(TimelineMarker(timestamp_s=4.0, label="late"))
++    timeline.add_marker(TimelineMarker(timestamp_s=1.0, label="early"))
++    markers = timeline.markers
++    assert [m.label for m in markers] == ["early", "late"]
++
++
++def test_timeline_rejects_non_monotonic_frame_timestamps() -> None:
++    timeline = CanonicalTimeline()
++    timeline.add_frame_timestamp(0.1)
++    with pytest.raises(ValueError):
++        timeline.add_frame_timestamp(0.09)

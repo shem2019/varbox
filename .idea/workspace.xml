@@ -5,9 +5,20 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="c04efb4c-5fb1-46fd-8da0-2ec9df05721d" name="Changes" comment="Latest changes as of 9/sep/2025">
-      <change afterPath="$PROJECT_DIR$/gui_app.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Qrcode.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/VarBox.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/VarBox.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/boxer_registry.py" beforeDir="false" afterPath="$PROJECT_DIR$/boxer_registry.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/multi_person_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/multi_person_tracker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/participant_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/participant_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/punch_detector.py" beforeDir="false" afterPath="$PROJECT_DIR$/punch_detector.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/score_tracker.py" beforeDir="false" afterPath="$PROJECT_DIR$/score_tracker.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scorecard_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/scorecard_generator.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/video_processor.py" beforeDir="false" afterPath="$PROJECT_DIR$/video_processor.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -33,7 +44,7 @@
   <component name="GithubPullRequestsUISettings">{
   &quot;selectedUrlAndAccountId&quot;: {
     &quot;url&quot;: &quot;https://github.com/shem2019/varbox.git&quot;,
-    &quot;accountId&quot;: &quot;5f30e533-0179-4300-bd9b-74a9f5be6fcd&quot;
+    &quot;accountId&quot;: &quot;15edbc61-7d9f-4320-91a8-bba3684641ec&quot;
   }
 }</component>
   <component name="ProjectColorInfo">{
@@ -44,21 +55,30 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.boxing_var_mediapipe.executor": "Run",
-    "Python.gui_app.executor": "Run",
-    "Python.main.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "master",
-    "last_opened_file_path": "C:/Users/RCA/PycharmProjects/VarBox/assets"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.boxing_var_mediapipe.executor&quot;: &quot;Run&quot;,
+    &quot;Python.creds.executor&quot;: &quot;Run&quot;,
+    &quot;Python.gui_app.executor&quot;: &quot;Run&quot;,
+    &quot;Python.main.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;last_opened_file_path&quot;: &quot;/home/bigdreamer/PycharmProjects/varbox/assets&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/assets" />
       <recent name="C:\Users\RCA\PycharmProjects\VarBox\assets" />
       <recent name="C:\Users\RCA\PycharmProjects\VarBox" />
     </key>
@@ -80,6 +100,7 @@
       <option name="IS_MODULE_SDK" value="true" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
       <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
@@ -98,7 +119,7 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-53e2683a6804-9cdd278e9d02-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-251.26094.141" />
+        <option value="bundled-python-sdk-ce6832f46686-7b97d883f26b-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.25557.178" />
       </set>
     </attachedChunks>
   </component>
@@ -109,6 +130,10 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1753782256487</updated>
+      <workItem from="1757695828966" duration="23000" />
+      <workItem from="1757695868228" duration="3231000" />
+      <workItem from="1757821711777" duration="12116000" />
+      <workItem from="1761241929510" duration="147000" />
     </task>
     <task id="LOCAL-00001" summary="With person tracking">
       <option name="closed" value="true" />
@@ -129,9 +154,15 @@
     <option name="localTasksCounter" value="3" />
     <servers />
   </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="With person tracking" />
     <MESSAGE value="Latest changes as of 9/sep/2025" />
     <option name="LAST_COMMIT_MESSAGE" value="Latest changes as of 9/sep/2025" />
+  </component>
+  <component name="com.intellij.coverage.CoverageDataManagerImpl">
+    <SUITE FILE_PATH="coverage/varbox$main.coverage" NAME="main Coverage Results" MODIFIED="1757835384900" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

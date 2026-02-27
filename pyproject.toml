@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boxing-analytics-assistant"
+version = "0.1.0"
+description = "Assistive boxing judging and analytics decision support"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "VarBox Team" }]
+license = { text = "Proprietary" }
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
+  "numpy==1.26.4",
+  "opencv-python==4.10.0.84",
+  "mediapipe==0.10.14",
+  "PySide6-Essentials==6.7.2",
+  "scipy==1.14.1",
+  "fpdf2==2.8.1",
+]
+dev = [
+  "black==24.10.0",
+  "ruff==0.6.9",
+  "mypy==1.11.2",
+  "pytest==8.3.3",
+  "pre-commit==3.8.0",
+  "types-PyYAML==6.0.12.20240917",
+]
+
+[project.scripts]
+boxing-analytics = "boxing_analytics.app.cli:main"
+boxing-analytics-calibrate = "boxing_analytics.calibration.calibrate_camera:main"
+boxing-analytics-eval = "boxing_analytics.eval.run:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = "^/(src|tests)/.*\\.py$"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E203"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+mypy_path = "src"
+files = ["src"]
+exclude = [
+  "^output/",
+  "^assets/",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+markers = [
+  "integration: higher-level behavior across modules",
+]

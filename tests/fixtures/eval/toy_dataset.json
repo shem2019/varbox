@@ -1,0 +1,138 @@
+{
+  "dataset_name": "toy_eval_v1",
+  "videos": [
+    {
+      "video_id": "toy_bout_001",
+      "samples": [
+        {
+          "timestamp_s": 1.0,
+          "fighter_id": "RED",
+          "glove_box": [100, 120, 160, 180],
+          "glove_keypoints": [[120, 140], [145, 165]],
+          "ground_truth_label": "landed_clean",
+          "predicted_label": "landed_clean",
+          "ground_truth_zone": "head",
+          "predicted_zone": "head",
+          "ground_truth_track_id": "r-track",
+          "predicted_track_id": "id-1",
+          "evidence_clip": "clips/clip_001.mp4"
+        },
+        {
+          "timestamp_s": 1.4,
+          "fighter_id": "BLUE",
+          "glove_box": [320, 125, 370, 185],
+          "glove_keypoints": [[340, 145], [360, 170]],
+          "ground_truth_label": "blocked_guarded",
+          "predicted_label": "blocked_guarded",
+          "ground_truth_zone": "unknown",
+          "predicted_zone": "unknown",
+          "ground_truth_track_id": "b-track",
+          "predicted_track_id": "id-2",
+          "evidence_clip": ""
+        },
+        {
+          "timestamp_s": 2.1,
+          "fighter_id": "RED",
+          "glove_box": [102, 130, 162, 190],
+          "glove_keypoints": [[124, 148], [146, 172]],
+          "ground_truth_label": "landed_glancing",
+          "predicted_label": "missed",
+          "ground_truth_zone": "body",
+          "predicted_zone": "unknown",
+          "ground_truth_track_id": "r-track",
+          "predicted_track_id": "id-1",
+          "evidence_clip": ""
+        },
+        {
+          "timestamp_s": 2.8,
+          "fighter_id": "BLUE",
+          "glove_box": [322, 132, 372, 192],
+          "glove_keypoints": [[344, 154], [363, 175]],
+          "ground_truth_label": "missed",
+          "predicted_label": "missed",
+          "ground_truth_zone": "unknown",
+          "predicted_zone": "unknown",
+          "ground_truth_track_id": "b-track",
+          "predicted_track_id": "id-9",
+          "evidence_clip": ""
+        },
+        {
+          "timestamp_s": 3.3,
+          "fighter_id": "RED",
+          "glove_box": [105, 128, 165, 188],
+          "glove_keypoints": [[126, 150], [149, 176]],
+          "ground_truth_label": "clinch",
+          "predicted_label": "clinch",
+          "ground_truth_zone": "unknown",
+          "predicted_zone": "unknown",
+          "ground_truth_track_id": "r-track",
+          "predicted_track_id": "id-1",
+          "evidence_clip": ""
+        },
+        {
+          "timestamp_s": 3.9,
+          "fighter_id": "BLUE",
+          "glove_box": [325, 129, 375, 189],
+          "glove_keypoints": [[346, 150], [367, 174]],
+          "ground_truth_label": "landed_clean",
+          "predicted_label": "landed_glancing",
+          "ground_truth_zone": "head",
+          "predicted_zone": "head",
+          "ground_truth_track_id": "b-track",
+          "predicted_track_id": "id-2",
+          "evidence_clip": "clips/clip_004.mp4"
+        },
+        {
+          "timestamp_s": 4.6,
+          "fighter_id": "RED",
+          "glove_box": [107, 126, 167, 186],
+          "glove_keypoints": [[128, 149], [151, 173]],
+          "ground_truth_label": "blocked_guarded",
+          "predicted_label": "blocked_guarded",
+          "ground_truth_zone": "unknown",
+          "predicted_zone": "unknown",
+          "ground_truth_track_id": "r-track",
+          "predicted_track_id": "id-1",
+          "evidence_clip": ""
+        },
+        {
+          "timestamp_s": 5.1,
+          "fighter_id": "BLUE",
+          "glove_box": [328, 127, 378, 187],
+          "glove_keypoints": [[350, 149], [370, 172]],
+          "ground_truth_label": "landed_clean",
+          "predicted_label": "landed_clean",
+          "ground_truth_zone": "body",
+          "predicted_zone": "body",
+          "ground_truth_track_id": "b-track",
+          "predicted_track_id": "id-2",
+          "evidence_clip": "clips/clip_005.mp4"
+        },
+        {
+          "timestamp_s": 5.8,
+          "fighter_id": "RED",
+          "glove_box": [109, 125, 169, 185],
+          "glove_keypoints": [[130, 148], [153, 171]],
+          "ground_truth_label": "landed_clean",
+          "predicted_label": "landed_clean",
+          "ground_truth_zone": "head",
+          "predicted_zone": "body",
+          "ground_truth_track_id": "r-track",
+          "predicted_track_id": "id-1",
+          "evidence_clip": "clips/clip_007.mp4"
+        }
+      ],
+      "round_markers_gt": [
+        {"round": 1, "timestamp_s": 0.0},
+        {"round": 2, "timestamp_s": 180.0}
+      ],
+      "round_markers_pred": [
+        {"round": 1, "timestamp_s": 0.12},
+        {"round": 2, "timestamp_s": 179.81}
+      ],
+      "ref_events": [
+        {"timestamp_s": 95.4, "event_type": "knockdown", "fighter_id": "BLUE", "points": 1}
+      ]
+    }
+  ]
+}

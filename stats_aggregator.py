@@ -11,6 +11,7 @@ class StatsAggregator:
         # Optional: KD counts and fouls per round (can be set externally)
         self.kd = {r: {"RED": 0, "BLUE": 0} for r in range(1, total_rounds + 1)}
         self.deductions = {r: {"RED": 0, "BLUE": 0} for r in range(1, total_rounds + 1)}
+        self.fouls = {r: {"RED": 0, "BLUE": 0} for r in range(1, total_rounds + 1)}
 
     def add_punch(self, role: str, round_no: int):
         if role in ("RED", "BLUE") and 1 <= round_no <= self.total_rounds:
@@ -24,6 +25,10 @@ class StatsAggregator:
     def add_deduction(self, role: str, round_no: int, points: int = 1):
         if role in ("RED", "BLUE") and 1 <= round_no <= self.total_rounds:
             self.deductions[round_no][role] += max(1, int(points))
+
+    def add_foul(self, role: str, round_no: int, count: int = 1):
+        if role in ("RED", "BLUE") and 1 <= round_no <= self.total_rounds:
+            self.fouls[round_no][role] += max(1, int(count))
 
     def get_round(self, round_no: int):
         return self.round_stats.get(round_no, {"RED": {"landed": 0}, "BLUE": {"landed": 0}})
