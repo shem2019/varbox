@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -185,7 +185,7 @@ class IdentityManager:
         norm = float(np.linalg.norm(vec))
         if norm <= 1e-6:
             return np.zeros((32,), dtype=np.float32)
-        return vec / norm
+        return cast(FloatArray, vec / norm)
 
     @staticmethod
     def _center(box: tuple[int, int, int, int]) -> tuple[float, float]:
