@@ -91,6 +91,7 @@ class IdentityManager:
         min_frames_before_switch: int | None = None,
         clinch_iou_freeze_threshold: float | None = None,
         clinch_freeze_frames: int | None = None,
+        lock_role_orientation: bool = False,
     ) -> None:
         self.max_missing_frames = max_missing_frames
         self.embedding_alpha = embedding_alpha
@@ -108,6 +109,7 @@ class IdentityManager:
         update_max_occlusion = min(update_max_occlusion, occlusion_update_max)
 
         self._frame_idx = 0
+        self.lock_role_orientation = bool(lock_role_orientation)
         self._tracks: dict[int, TrackState] = {}
         self._role_to_id: dict[str, int | None] = {"RED": None, "BLUE": None, "REF": None}
         self._id_to_role: dict[int, str] = {}
@@ -478,6 +480,19 @@ class IdentityManager:
         blue_raw = result.get("BLUE")
         new_red = int(red_raw) if isinstance(red_raw, int | np.integer) else None
         new_blue = int(blue_raw) if isinstance(blue_raw, int | np.integer) else None
+
+        # Keep orientation stable after initial lock if enabled.
+        if (
+            self.lock_role_orientation
+            and prev_red is not None
+            and prev_blue is not None
+            and new_red is not None
+            and new_blue is not None
+            and (new_red != prev_red or new_blue != prev_blue)
+        ):
+            new_red = prev_red
+            new_blue = prev_blue
+
         confidence = self._as_float(result.get("confidence"), 0.0)
         debug_raw = result.get("debug")
         debug: dict[str, object] = dict(debug_raw) if isinstance(debug_raw, dict) else {}

@@ -394,9 +394,10 @@ class TwoFighterIdentityHMM:
         good = next_points[status.flatten() == 1]
         if good.size == 0:
             return None
-        cx = float(np.median(good[:, 0]))
-        cy = float(np.median(good[:, 1]))
-        return (cx, cy), good.reshape(-1, 1, 2).astype(np.float32)
+        good_xy = np.asarray(good, dtype=np.float32).reshape(-1, 2)
+        cx = float(np.median(good_xy[:, 0]))
+        cy = float(np.median(good_xy[:, 1]))
+        return (cx, cy), good_xy.reshape(-1, 1, 2).astype(np.float32)
 
     def _update_object_file(
         self,

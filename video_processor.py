@@ -83,6 +83,43 @@ def _as_point(v) -> Optional[Tuple[int, int]]:
     return None
 
 
+def _safe_circle(
+    image: np.ndarray,
+    center: object,
+    radius: int,
+    color: Tuple[int, int, int],
+    thickness: int,
+) -> None:
+    pxy = _as_point(center)
+    if pxy is None:
+        return
+    cv2.circle(image, pxy, radius, color, thickness)
+
+
+def _apply_output_orientation(frame: np.ndarray) -> np.ndarray:
+    mode = str(getattr(config, "OUTPUT_ORIENTATION", "source") or "source").lower()
+    direction = str(
+        getattr(config, "OUTPUT_ROTATION_DIRECTION", "clockwise") or "clockwise"
+    ).lower()
+    h, w = frame.shape[:2]
+
+    if mode == "portrait" and w > h:
+        rot = (
+            cv2.ROTATE_90_COUNTERCLOCKWISE
+            if direction == "counterclockwise"
+            else cv2.ROTATE_90_CLOCKWISE
+        )
+        return cv2.rotate(frame, rot)
+    if mode == "landscape" and h > w:
+        rot = (
+            cv2.ROTATE_90_COUNTERCLOCKWISE
+            if direction == "counterclockwise"
+            else cv2.ROTATE_90_CLOCKWISE
+        )
+        return cv2.rotate(frame, rot)
+    return frame
+
+
 def _warmup_assign(poses):
     if len(poses) < 2:
         return None, None
@@ -149,8 +186,8 @@ def _save_punch_evidence(
         3,
     )
     cv2.line(annotated, wrist_pt, impact_pt, (0, 255, 255), 3)
-    cv2.circle(annotated, wrist_pt, 8, ROLE_COLOR[attacker_role], -1)
-    cv2.circle(annotated, impact_pt, 12, (30, 210, 250), 2)
+    _safe_circle(annotated, wrist_pt, 8, ROLE_COLOR[attacker_role], -1)
+    _safe_circle(annotated, impact_pt, 12, (30, 210, 250), 2)
     cv2.putText(
         annotated,
         f"{attacker_role} -> {defender_role}  |  {target_zone}  |  conf {confidence:.2f}",
@@ -170,7 +207,7 @@ def _save_punch_evidence(
     # basic silhouette
     head_c = (panel_w // 2, int(h * 0.22))
     head_r = 42
-    cv2.circle(panel, head_c, head_r, (80, 88, 102), 2)
+    _safe_circle(panel, head_c, head_r, (80, 88, 102), 2)
     body_top = int(h * 0.30)
     body_bot = int(h * 0.82)
     cv2.rectangle(
@@ -178,8 +215,8 @@ def _save_punch_evidence(
     )
 
     px, py = _target_point_in_panel(impact_pt, defender_box, panel_w, h)
-    cv2.circle(panel, (px, py), 11, (24, 24, 210), -1)
-    cv2.circle(panel, (px, py), 17, (24, 24, 210), 2)
+    _safe_circle(panel, (px, py), 11, (24, 24, 210), -1)
+    _safe_circle(panel, (px, py), 17, (24, 24, 210), 2)
     cv2.putText(panel, target_zone, (30, h - 26), cv2.FONT_HERSHEY_SIMPLEX, 0.78, (34, 39, 52), 2)
 
     composite = np.hstack([annotated, panel])
@@ -211,8 +248,8 @@ def _draw_recent_impacts(frame, impacts):
         if ttl <= 0:
             continue
         rad = 8 + (IMPACT_MARK_TTL - ttl)
-        cv2.circle(frame, pt, rad, ROLE_COLOR[role], 2)
-        cv2.circle(frame, pt, 3, (255, 255, 255), -1)
+        _safe_circle(frame, pt, rad, ROLE_COLOR[role], 2)
+        _safe_circle(frame, pt, 3, (255, 255, 255), -1)
         item["ttl"] = ttl - 1
         keep.append(item)
     return keep
@@ -645,6 +682,15 @@ def process_video(
     dep_min_frames_before_switch = os.getenv("VARBOX_ID_MIN_FRAMES_BEFORE_SWITCH", "").strip()
     dep_clinch_iou_freeze = os.getenv("VARBOX_ID_CLINCH_IOU_FREEZE", "").strip()
     dep_clinch_freeze_frames = os.getenv("VARBOX_ID_CLINCH_FREEZE_FRAMES", "").strip()
+    lock_corner_orientation = bool(
+        int(
+            os.getenv(
+                "VARBOX_LOCK_CORNER_ORIENTATION",
+                str(getattr(config, "LOCK_CORNER_ORIENTATION", 1)),
+            )
+            or "1"
+        )
+    )
 
     _emit_progress(
         progress_cb,
@@ -692,6 +738,7 @@ def process_video(
         ),
         clinch_iou_freeze_threshold=float(dep_clinch_iou_freeze) if dep_clinch_iou_freeze else None,
         clinch_freeze_frames=int(dep_clinch_freeze_frames) if dep_clinch_freeze_frames else None,
+        lock_role_orientation=lock_corner_orientation,
     )
     stats = StatsAggregator(total_rounds=bout_config.rounds_count)
     timeline = CanonicalTimeline()
@@ -732,6 +779,7 @@ def process_video(
         "deprecated_min_frames_before_switch": dep_min_frames_before_switch,
         "deprecated_clinch_iou_freeze": dep_clinch_iou_freeze,
         "deprecated_clinch_freeze_frames": dep_clinch_freeze_frames,
+        "lock_corner_orientation": int(lock_corner_orientation),
     }
     score_tracker.metadata["input_video"] = input_video
     score_tracker.metadata["decision_support_notice"] = (
@@ -811,6 +859,7 @@ def process_video(
         if not ok:
             break
         frame_idx += 1
+        frame = _apply_output_orientation(frame)
 
         ts_row = resolve_frame_timestamp(
             frame_index=frame_idx,
@@ -840,7 +889,15 @@ def process_video(
             out = cv2.VideoWriter(output_video, cv2.VideoWriter_fourcc(*"mp4v"), fps, writer_size)
             score_tracker.metadata["input_resolution"] = f"{fw}x{fh}"
             score_tracker.metadata["output_resolution"] = f"{fw}x{fh}"
-            score_tracker.metadata["preserved_orientation"] = 1
+            score_tracker.metadata["output_orientation_mode"] = str(
+                getattr(config, "OUTPUT_ORIENTATION", "source") or "source"
+            ).lower()
+            score_tracker.metadata["output_rotation_direction"] = str(
+                getattr(config, "OUTPUT_ROTATION_DIRECTION", "clockwise") or "clockwise"
+            ).lower()
+            score_tracker.metadata["preserved_orientation"] = int(
+                score_tracker.metadata["output_orientation_mode"] == "source"
+            )
         elif writer_size is not None and (fw, fh) != writer_size:
             frame = cv2.resize(frame, writer_size, interpolation=cv2.INTER_LINEAR)
             fh, fw = frame.shape[:2]
@@ -988,7 +1045,10 @@ def process_video(
             )
 
             for pt in data["keypoints"].values():
-                cv2.circle(frame, tuple(pt), 3, color, -1)
+                pxy = _as_point(pt)
+                if pxy is None:
+                    continue
+                _safe_circle(frame, pxy, 3, color, -1)
 
         _draw_wrist_trails(frame, trails)
         impacts = _draw_recent_impacts(frame, impacts)

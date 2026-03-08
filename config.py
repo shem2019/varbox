@@ -24,6 +24,21 @@ PUNCH_EVIDENCE_DIR = os.getenv("VARBOX_EVIDENCE_DIR", os.path.join(_DEFAULT_OUT_
 ASSETS_DIR = os.getenv("VARBOX_ASSETS", os.path.join(_ROOT, "assets"))
 BACKEND = os.getenv("VARBOX_BACKEND", "opencv")  # "opencv" or "yolov8"
 
+# Output orientation control.
+# "portrait": rotate landscape frames to portrait.
+# "landscape": rotate portrait frames to landscape.
+# "source": keep source orientation.
+OUTPUT_ORIENTATION = os.getenv("VARBOX_OUTPUT_ORIENTATION", "portrait").strip().lower()
+# Used when a rotation is required: "clockwise" or "counterclockwise".
+OUTPUT_ROTATION_DIRECTION = (
+    os.getenv("VARBOX_OUTPUT_ROTATION_DIRECTION", "clockwise").strip().lower()
+)
+
+# Identity/corner orientation lock:
+# 1 = once RED/BLUE are assigned, keep that orientation and block swaps.
+# 0 = allow dynamic re-assignment/swaps.
+LOCK_CORNER_ORIENTATION = int(os.getenv("VARBOX_LOCK_CORNER_ORIENTATION", "1") or "1")
+
 # OpenCV-DNN (Lite) person detector files (optional)
 DNN_PROTO = os.getenv(
     "VARBOX_SSD_PROTO",

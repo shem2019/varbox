@@ -49,6 +49,7 @@ from boxing_analytics.review import (
     save_review_session,
 )
 from boxing_analytics.calibration import load_profile
+from opencv_guard import install_opencv_circle_guard
 from score_tracker import ScoreTracker
 from scorecard_generator import generate_scorecard
 from video_processor import process_video
@@ -1545,6 +1546,7 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    install_opencv_circle_guard()
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()
