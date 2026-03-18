@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from collections import defaultdict, deque
+from itertools import combinations
 from hashlib import sha256
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -11,7 +12,6 @@ os.environ.setdefault("GLOG_minloglevel", "2")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 ROOT_DIR = os.path.dirname(__file__)
@@ -47,12 +47,24 @@ from boxing_analytics.scoring import (
 from boxing_analytics.tracking import IdentityManager
 
 import config
+from mediapipe_compat import PoseLandmark
 from multi_person_tracker import MultiPersonPoseTracker
 from score_tracker import ScoreTracker
 from stats_aggregator import StatsAggregator
 
-POSE = mp.solutions.pose.PoseLandmark
-ROLE_COLOR = {"BLUE": (255, 110, 90), "RED": (20, 35, 230), None: (90, 220, 90)}
+POSE = PoseLandmark
+ROLE_COLOR = {
+    "BLUE": (255, 110, 90),
+    "RED": (20, 35, 230),
+    "REF": (210, 214, 224),
+    None: (90, 220, 90),
+}
+ROLE_LABEL = {
+    "BLUE": "Blue Corner",
+    "RED": "Red Corner",
+    "REF": "Referee",
+    None: "Tracked Person",
+}
 
 # Tunables
 WARMUP_FRAMES = 90
@@ -133,6 +145,83 @@ def _warmup_assign(poses):
     if red_id == blue_id:
         return None, None
     return red_id, blue_id
+
+
+def _box_area(box) -> float:
+    x1, y1, x2, y2 = box
+    return float(max(1, x2 - x1) * max(1, y2 - y1))
+
+
+def _select_fighter_pair(
+    poses: dict[int, dict],
+    frame_shape: tuple[int, int, int],
+    prev_role_centers: dict[str, tuple[int, int] | None],
+) -> tuple[int | None, int | None]:
+    if len(poses) < 2:
+        return None, None
+
+    h, w = frame_shape[:2]
+    frame_center = (w * 0.5, h * 0.5)
+    diag = max(1.0, float(np.hypot(w, h)))
+    best_pair = None
+    best_score = float("-inf")
+
+    for (id_a, data_a), (id_b, data_b) in combinations(poses.items(), 2):
+        if data_a.get("role") == "REF" or data_b.get("role") == "REF":
+            continue
+        box_a = data_a["box"]
+        box_b = data_b["box"]
+        center_a = data_a["center"]
+        center_b = data_b["center"]
+        area_a = _box_area(box_a)
+        area_b = _box_area(box_b)
+        min_area = min(area_a, area_b)
+        max_area = max(area_a, area_b)
+        area_ratio = min_area / max(1.0, max_area)
+
+        pair_center = ((center_a[0] + center_b[0]) * 0.5, (center_a[1] + center_b[1]) * 0.5)
+        center_dist = np.hypot(pair_center[0] - frame_center[0], pair_center[1] - frame_center[1])
+        pair_dist = np.hypot(center_a[0] - center_b[0], center_a[1] - center_b[1]) / diag
+        vertical_gap = abs(center_a[1] - center_b[1]) / max(1.0, float(h))
+
+        edge_margin_a = min(center_a[0], w - center_a[0], center_a[1], h - center_a[1]) / diag
+        edge_margin_b = min(center_b[0], w - center_b[0], center_b[1], h - center_b[1]) / diag
+        edge_score = edge_margin_a + edge_margin_b
+
+        distance_score = max(0.0, 1.0 - abs(pair_dist - 0.18) / 0.18)
+        centrality_score = 1.0 - min(1.0, center_dist / (0.35 * diag))
+        score = (
+            1.8 * area_ratio
+            + 1.2 * distance_score
+            + 1.0 * centrality_score
+            + 0.8 * edge_score
+            + 0.00003 * min_area
+            - 1.5 * vertical_gap
+        )
+        if score > best_score:
+            best_score = score
+            best_pair = ((id_a, center_a), (id_b, center_b))
+
+    if best_pair is None:
+        return None, None
+
+    (id_a, center_a), (id_b, center_b) = best_pair
+    prev_red = prev_role_centers.get("RED")
+    prev_blue = prev_role_centers.get("BLUE")
+    if prev_red is not None and prev_blue is not None:
+        keep = np.hypot(center_a[0] - prev_red[0], center_a[1] - prev_red[1]) + np.hypot(
+            center_b[0] - prev_blue[0], center_b[1] - prev_blue[1]
+        )
+        swap = np.hypot(center_b[0] - prev_red[0], center_b[1] - prev_red[1]) + np.hypot(
+            center_a[0] - prev_blue[0], center_a[1] - prev_blue[1]
+        )
+        if keep <= swap:
+            return id_a, id_b
+        return id_b, id_a
+
+    if center_a[0] <= center_b[0]:
+        return id_a, id_b
+    return id_b, id_a
 
 
 def _target_point_in_panel(impact, defender_box, panel_w, panel_h):
@@ -257,23 +346,43 @@ def _draw_recent_impacts(frame, impacts):
 
 def _overlay_top_bar(frame, score_tracker, red_name, blue_name, lock_status):
     h, w = frame.shape[:2]
-    cv2.rectangle(frame, (0, 0), (w, 52), (17, 20, 28), -1)
+    cv2.rectangle(frame, (0, 0), (w, 64), (17, 20, 28), -1)
+    cv2.rectangle(frame, (0, 0), (w, 3), (48, 58, 74), -1)
+
     cv2.putText(
         frame,
-        f"{red_name} (RED)  P:{score_tracker.get_score('RED')}  A:{score_tracker.attempts.get('RED', 0)}",
-        (12, 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.56,
+        f"{red_name} | {ROLE_LABEL['RED']}",
+        (14, 22),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.58,
         ROLE_COLOR["RED"],
         2,
     )
     cv2.putText(
         frame,
-        f"{blue_name} (BLUE)  P:{score_tracker.get_score('BLUE')}  A:{score_tracker.attempts.get('BLUE', 0)}",
-        (12, 43),
+        f"Punches {score_tracker.get_score('RED')}   Attempts {score_tracker.attempts.get('RED', 0)}",
+        (14, 46),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.56,
+        0.53,
+        (238, 241, 247),
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"{blue_name} | {ROLE_LABEL['BLUE']}",
+        (w // 2 - 120, 22),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.58,
         ROLE_COLOR["BLUE"],
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"Punches {score_tracker.get_score('BLUE')}   Attempts {score_tracker.attempts.get('BLUE', 0)}",
+        (w // 2 - 120, 46),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.53,
+        (238, 241, 247),
         2,
     )
 
@@ -282,16 +391,64 @@ def _overlay_top_bar(frame, score_tracker, red_name, blue_name, lock_status):
     cv2.putText(
         frame,
         f"Accuracy  R:{r_acc:.1f}%  B:{b_acc:.1f}%",
-        (w - 330, 20),
+        (w - 320, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.53,
         (190, 215, 245),
         2,
     )
     locked = lock_status.get("RED") is not None and lock_status.get("BLUE") is not None
-    lock_text = "Corners Locked" if locked else "Corner Locking..."
+    ref_locked = lock_status.get("REF") is not None
+    lock_text = "Roles Locked" if locked else "Locking Roles..."
+    if ref_locked:
+        lock_text = f"{lock_text}  |  Ref Locked"
     lock_col = (76, 210, 120) if locked else (70, 180, 255)
-    cv2.putText(frame, lock_text, (w - 250, 43), cv2.FONT_HERSHEY_SIMPLEX, 0.6, lock_col, 2)
+    cv2.putText(frame, lock_text, (w - 320, 50), cv2.FONT_HERSHEY_DUPLEX, 0.57, lock_col, 2)
+
+
+def _draw_track_card(frame, box, role, track_id, score_tracker):
+    x1, y1, x2, _ = box
+    color = ROLE_COLOR.get(role, ROLE_COLOR[None])
+    title = ROLE_LABEL.get(role, ROLE_LABEL[None])
+    status = f"Track {track_id}"
+    if role in ("RED", "BLUE"):
+        status = (
+            f"Punches {score_tracker.get_score(role)}  |  "
+            f"Attempts {score_tracker.attempts.get(role, 0)}  |  Track {track_id}"
+        )
+
+    font_title = cv2.FONT_HERSHEY_DUPLEX
+    font_body = cv2.FONT_HERSHEY_SIMPLEX
+    title_size, _ = cv2.getTextSize(title, font_title, 0.58, 2)
+    body_size, _ = cv2.getTextSize(status, font_body, 0.48, 1)
+    card_w = max(title_size[0], body_size[0]) + 20
+    card_h = 42
+    card_x1 = max(6, min(x1, frame.shape[1] - card_w - 6))
+    card_y1 = max(6, y1 - card_h - 10)
+    card_x2 = card_x1 + card_w
+    card_y2 = card_y1 + card_h
+
+    cv2.rectangle(frame, (card_x1, card_y1), (card_x2, card_y2), (16, 19, 26), -1)
+    cv2.rectangle(frame, (card_x1, card_y1), (card_x1 + 6, card_y2), color, -1)
+    cv2.rectangle(frame, (card_x1, card_y1), (card_x2, card_y2), color, 1)
+    cv2.putText(
+        frame,
+        title,
+        (card_x1 + 14, card_y1 + 16),
+        font_title,
+        0.58,
+        color if role in ("RED", "BLUE", "REF") else (220, 232, 242),
+        2,
+    )
+    cv2.putText(
+        frame,
+        status,
+        (card_x1 + 14, card_y1 + 34),
+        font_body,
+        0.48,
+        (236, 239, 244),
+        1,
+    )
 
 
 def _timestamp_from_seconds(timestamp_s: float) -> str:
@@ -782,6 +939,12 @@ def process_video(
         "lock_corner_orientation": int(lock_corner_orientation),
     }
     score_tracker.metadata["input_video"] = input_video
+    try:
+        score_tracker.metadata["manual_ring_roi"] = json.loads(
+            os.getenv("VARBOX_RING_ROI", "").strip() or "null"
+        )
+    except Exception:
+        score_tracker.metadata["manual_ring_roi"] = None
     score_tracker.metadata["decision_support_notice"] = (
         "Assistive judging analytics only. Requires human judge/referee confirmation."
     )
@@ -825,10 +988,17 @@ def process_video(
         for c in manual_corrections
     ]
 
-    if os.getenv("VARBOX_MANUAL_SEEDS", "").strip():
-        score_tracker.metadata["manual_seeds_applied"] = []
+    manual_seed_payload = os.getenv("VARBOX_MANUAL_SEEDS", "").strip()
+    if manual_seed_payload:
+        try:
+            seed_rows = json.loads(manual_seed_payload)
+        except Exception:
+            seed_rows = {}
+        score_tracker.metadata["manual_seeds_requested"] = sorted(
+            [role for role in ("RED", "BLUE", "REF") if isinstance(seed_rows, dict) and role in seed_rows]
+        )
         score_tracker.metadata["manual_seed_notice"] = (
-            "Manual fingerprint seeds ignored: identity now uses motion + appearance re-ID without color priors."
+            "Manual role seeds enabled: tracker will lock labeled RED/BLUE/REF identities and reacquire them with motion gating."
         )
 
     frame_idx = 0
@@ -847,6 +1017,7 @@ def process_video(
     in_round = False
     last_timestamp_s = None
     cancelled = False
+    prev_role_centers: dict[str, tuple[int, int] | None] = {"RED": None, "BLUE": None}
 
     while cap.isOpened():
         if should_stop is not None and should_stop():
@@ -911,13 +1082,50 @@ def process_video(
         poses = pose_tracker.process_frame(frame, frame_idx)
 
         identity.update(frame, poses, frame_idx=frame_idx, timestamp_s=timestamp_s)
-        red_id = identity.id_for_role("RED")
-        blue_id = identity.id_for_role("BLUE")
+        tracker_live_roles = pose_tracker.live_role_status()
+        tracker_lock_status = pose_tracker.lock_status()
+        frame_role_map: dict[int, str] = {
+            bid: role for bid, role in ((bid, data.get("role")) for bid, data in poses.items()) if role
+        }
+
+        red_id = tracker_live_roles.get("RED")
+        blue_id = tracker_live_roles.get("BLUE")
+        ref_id = tracker_live_roles.get("REF")
+        if red_id is None:
+            red_id = identity.live_id_for_role("RED")
+        if blue_id is None:
+            blue_id = identity.live_id_for_role("BLUE")
+
+        if (
+            red_id is None
+            or blue_id is None
+            or red_id not in poses
+            or blue_id not in poses
+            or red_id == blue_id
+        ):
+            fallback_red, fallback_blue = _select_fighter_pair(
+                poses=poses,
+                frame_shape=frame.shape,
+                prev_role_centers=prev_role_centers,
+            )
+            if fallback_red is not None and fallback_red in poses:
+                red_id = fallback_red
+            if fallback_blue is not None and fallback_blue in poses:
+                blue_id = fallback_blue
 
         if (red_id is None or blue_id is None) and frame_idx <= WARMUP_FRAMES:
             f_red, f_blue = _warmup_assign(poses)
             red_id = red_id if red_id is not None else f_red
             blue_id = blue_id if blue_id is not None else f_blue
+
+        if red_id is not None and red_id in poses:
+            frame_role_map[red_id] = "RED"
+            prev_role_centers["RED"] = poses[red_id]["center"]
+        if blue_id is not None and blue_id in poses:
+            frame_role_map[blue_id] = "BLUE"
+            prev_role_centers["BLUE"] = poses[blue_id]["center"]
+        if ref_id is not None and ref_id in poses:
+            frame_role_map[ref_id] = "REF"
 
         if red_id is not None and blue_id is not None and red_id in poses and blue_id in poses:
             d_red, d_blue = poses[red_id], poses[blue_id]
@@ -1013,7 +1221,7 @@ def process_video(
 
         for bid, data in poses.items():
             x1, y1, x2, y2 = data["box"]
-            role = identity.role_for_id(bid)
+            role = data.get("role") or frame_role_map.get(bid) or identity.role_for_id(bid)
             if role is None and frame_idx <= WARMUP_FRAMES:
                 if red_id == bid:
                     role = "RED"
@@ -1032,17 +1240,8 @@ def process_video(
                 except Exception:
                     pass
 
-            p_count = score_tracker.get_score(role) if role in ("RED", "BLUE") else 0
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                frame,
-                f"{role or 'TRACK'} | ID {bid} | P:{p_count}",
-                (x1, max(0, y1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
-                color,
-                2,
-            )
+            _draw_track_card(frame, (x1, y1, x2, y2), role, bid, score_tracker)
 
             for pt in data["keypoints"].values():
                 pxy = _as_point(pt)
@@ -1052,7 +1251,14 @@ def process_video(
 
         _draw_wrist_trails(frame, trails)
         impacts = _draw_recent_impacts(frame, impacts)
-        _overlay_top_bar(frame, score_tracker, red_name, blue_name, identity.role_status())
+        lock_status = identity.role_status()
+        for role, track_id in pose_tracker.role_status().items():
+            if track_id is not None:
+                lock_status[role] = track_id
+        for role, track_id in tracker_lock_status.items():
+            if track_id is not None:
+                lock_status[role] = track_id
+        _overlay_top_bar(frame, score_tracker, red_name, blue_name, lock_status)
 
         out.write(frame)
         if bout_over:
@@ -1061,6 +1267,8 @@ def process_video(
     cap.release()
     if out is not None:
         out.release()
+
+    score_tracker.metadata["manual_seed_status"] = pose_tracker.manual_seed_status()
 
     if cancelled:
         score_tracker.metadata["cancelled"] = 1
@@ -1197,12 +1405,20 @@ def process_video(
     score_tracker.metadata["kd"] = stats.kd
     score_tracker.metadata["deductions"] = stats.deductions
     score_tracker.metadata["fouls"] = stats.fouls
+    final_lock_status = identity.role_status()
+    for role, track_id in pose_tracker.role_status().items():
+        if track_id is not None:
+            final_lock_status[role] = track_id
+    for role, track_id in pose_tracker.lock_status().items():
+        if track_id is not None:
+            final_lock_status[role] = track_id
     score_tracker.metadata["corner_lock"] = {
-        "RED": identity.role_status().get("RED"),
-        "BLUE": identity.role_status().get("BLUE"),
+        "RED": final_lock_status.get("RED"),
+        "BLUE": final_lock_status.get("BLUE"),
+        "REF": final_lock_status.get("REF"),
     }
     score_tracker.metadata["corner_locked"] = (
-        identity.id_for_role("RED") is not None and identity.id_for_role("BLUE") is not None
+        final_lock_status.get("RED") is not None and final_lock_status.get("BLUE") is not None
     )
     score_tracker.metadata["tracking_stats"] = identity.tracking_stats()
     score_tracker.metadata["identity_confidence"] = identity.role_confidence()

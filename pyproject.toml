@@ -14,12 +14,17 @@ dependencies = []
 
 [project.optional-dependencies]
 runtime = [
-  "numpy==1.26.4",
-  "opencv-python==4.10.0.84",
-  "mediapipe==0.10.14",
-  "PySide6-Essentials==6.7.2",
-  "scipy==1.14.1",
-  "fpdf2==2.8.1",
+  "numpy==2.4.3",
+  "opencv-python==4.13.0.92",
+  "mediapipe==0.10.32",
+  "PySide6-Essentials==6.10.2",
+  "scipy==1.17.1",
+  "fpdf2==2.8.7",
+  "protobuf==7.34.0",
+  "torch==2.10.0",
+  "torchvision==0.25.0",
+  "torchaudio==2.10.0",
+  "ultralytics==8.4.22",
 ]
 dev = [
   "black==24.10.0",

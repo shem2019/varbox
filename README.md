@@ -26,6 +26,12 @@ python -m pip install --upgrade pip
 python -m pip install -e .[dev]
 ```
 
+## Apple Silicon Runtime
+- Use Python 3.10 or newer.
+- Prefer `VARBOX_BACKEND=auto` on Apple Silicon. It resolves to YOLOv8 and uses `VARBOX_YOLO_DEVICE=mps` when PyTorch MPS is available.
+- The runtime now defaults to a larger YOLO inference size on Apple Silicon and disables MediaPipe segmentation unless explicitly re-enabled.
+- Print the detected accelerator profile with `python -m boxing_analytics.app.cli --print-runtime-profile`.
+
 ## Quality Gates
 ```bash
 ruff check src tests

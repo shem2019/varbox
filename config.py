@@ -1,5 +1,6 @@
-# config.py
 import os
+
+from runtime_profile import detect_runtime_profile
 
 PUNCH_DISTANCE_THRESHOLD = 50
 COOLDOWN_FRAMES = 15
@@ -22,13 +23,29 @@ PUNCH_EVIDENCE_DIR = os.getenv("VARBOX_EVIDENCE_DIR", os.path.join(_DEFAULT_OUT_
 
 # detection backend & model assets
 ASSETS_DIR = os.getenv("VARBOX_ASSETS", os.path.join(_ROOT, "assets"))
-BACKEND = os.getenv("VARBOX_BACKEND", "opencv")  # "opencv" or "yolov8"
+RUNTIME_PROFILE = detect_runtime_profile()
+IS_APPLE_SILICON = RUNTIME_PROFILE.is_apple_silicon
+BACKEND = os.getenv("VARBOX_BACKEND", "auto")  # "auto", "opencv", or "yolov8"
+RESOLVED_BACKEND = RUNTIME_PROFILE.preferred_backend
+YOLO_DEVICE = os.getenv("VARBOX_YOLO_DEVICE", RUNTIME_PROFILE.yolo_device)
+YOLO_IMGSZ = int(os.getenv("VARBOX_YOLO_IMGSZ", str(RUNTIME_PROFILE.yolo_imgsz)) or "640")
+YOLO_HALF = int(os.getenv("VARBOX_YOLO_HALF", "1" if RUNTIME_PROFILE.yolo_half else "0") or "0")
+POSE_MODEL_COMPLEXITY = int(
+    os.getenv("VARBOX_POSE_MODEL_COMPLEXITY", str(RUNTIME_PROFILE.pose_model_complexity)) or "1"
+)
+POSE_ENABLE_SEGMENTATION = int(
+    os.getenv(
+        "VARBOX_POSE_ENABLE_SEGMENTATION",
+        "1" if RUNTIME_PROFILE.pose_enable_segmentation else "0",
+    )
+    or "0"
+)
 
 # Output orientation control.
 # "portrait": rotate landscape frames to portrait.
 # "landscape": rotate portrait frames to landscape.
 # "source": keep source orientation.
-OUTPUT_ORIENTATION = os.getenv("VARBOX_OUTPUT_ORIENTATION", "portrait").strip().lower()
+OUTPUT_ORIENTATION = os.getenv("VARBOX_OUTPUT_ORIENTATION", "source").strip().lower()
 # Used when a rotation is required: "clockwise" or "counterclockwise".
 OUTPUT_ROTATION_DIRECTION = (
     os.getenv("VARBOX_OUTPUT_ROTATION_DIRECTION", "clockwise").strip().lower()
@@ -51,3 +68,7 @@ DNN_MODEL = os.getenv(
 
 # YOLOv8 weights (Pro build)
 YOLOV8_WEIGHTS = os.getenv("VARBOX_YOLOV8_WEIGHTS", os.path.join(ASSETS_DIR, "models", "yolov8n.pt"))
+POSE_TASK_MODEL = os.getenv(
+    "VARBOX_POSE_TASK_MODEL",
+    os.path.join(ASSETS_DIR, "models", "mediapipe", "pose_landmarker_lite.task"),
+)

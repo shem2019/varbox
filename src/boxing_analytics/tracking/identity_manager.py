@@ -113,6 +113,8 @@ class IdentityManager:
         self._tracks: dict[int, TrackState] = {}
         self._role_to_id: dict[str, int | None] = {"RED": None, "BLUE": None, "REF": None}
         self._id_to_role: dict[int, str] = {}
+        self._live_role_to_id: dict[str, int | None] = {"RED": None, "BLUE": None, "REF": None}
+        self._live_id_to_role: dict[int, str] = {}
         self._role_missing: dict[str, int] = {"RED": 0, "BLUE": 0}
         self._role_confidence: dict[str, float] = {"RED": 0.0, "BLUE": 0.0}
         self._swap_log: list[dict[str, Any]] = []
@@ -516,6 +518,15 @@ class IdentityManager:
             self._role_to_id[role] = role_id
             self._role_confidence[role] = confidence
 
+        self._live_role_to_id["RED"] = None
+        self._live_role_to_id["BLUE"] = None
+        if self._hmm._current_state == 0:
+            self._live_role_to_id["RED"] = obs_a.track_id if obs_a is not None else None
+            self._live_role_to_id["BLUE"] = obs_b.track_id if obs_b is not None else None
+        else:
+            self._live_role_to_id["RED"] = obs_b.track_id if obs_b is not None else None
+            self._live_role_to_id["BLUE"] = obs_a.track_id if obs_a is not None else None
+
         if (
             prev_red is not None
             and prev_blue is not None
@@ -552,24 +563,38 @@ class IdentityManager:
 
         assigned_ids = {
             role_id
-            for role_id in (self._role_to_id["RED"], self._role_to_id["BLUE"])
+            for role_id in (self._live_role_to_id["RED"], self._live_role_to_id["BLUE"])
             if role_id is not None
         }
-        self._role_to_id["REF"] = self._referee_candidate(detections, assigned_ids)
+        self._live_role_to_id["REF"] = self._referee_candidate(detections, assigned_ids)
+        self._role_to_id["REF"] = self._live_role_to_id["REF"]
 
         self._id_to_role = {}
         for role, role_id in self._role_to_id.items():
             if role_id is not None:
                 self._id_to_role[role_id] = role
+        self._live_id_to_role = {}
+        for role, role_id in self._live_role_to_id.items():
+            if role_id is not None:
+                self._live_id_to_role[role_id] = role
 
     def id_for_role(self, role: str) -> int | None:
         return self._role_to_id.get(role.upper())
 
+    def live_id_for_role(self, role: str) -> int | None:
+        return self._live_role_to_id.get(role.upper())
+
     def role_for_id(self, track_id: int) -> str | None:
+        role = self._live_id_to_role.get(track_id)
+        if role is not None:
+            return role
         return self._id_to_role.get(track_id)
 
     def role_status(self) -> dict[str, int | None]:
         return dict(self._role_to_id)
+
+    def live_role_status(self) -> dict[str, int | None]:
+        return dict(self._live_role_to_id)
 
     def role_confidence(self) -> dict[str, float]:
         return {

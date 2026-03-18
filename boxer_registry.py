@@ -1,12 +1,12 @@
 import math
 
-import mediapipe as mp
 import numpy as np
 from scipy.spatial.distance import cosine
 
 from config import COOLDOWN_FRAMES
+from mediapipe_compat import PoseLandmark
 
-POSE = mp.solutions.pose.PoseLandmark
+POSE = PoseLandmark
 
 
 class BoxerRegistry:

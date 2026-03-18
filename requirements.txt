@@ -1,23 +1,21 @@
-# Core runtime deps (Windows, CPU-only). Tested on Python 3.10–3.11.
+# Core runtime deps validated in the local Python 3.13 environment.
+# Apple Silicon should use the default PyTorch wheels so YOLOv8 can run on MPS.
 
 # Numeric stack
-numpy
-scipy
-mediapipe
+numpy==2.4.3
+scipy==1.17.1
+mediapipe==0.10.32
 # Vision & pose
-opencv-python
+opencv-python==4.13.0.92
 
-fpdf
-  # mediapipe works best with protobuf 3.20.x on Windows
-PySide6-Essentials==6.7.2
-protobuf
+fpdf2==2.8.7
+PySide6-Essentials==6.10.2
+protobuf==7.34.0
 
-# CPU-only PyTorch (Linux) – prefer these wheels
--f https://download.pytorch.org/whl/cpu/torch_stable.html
-
-torch==2.4.0
-torchvision==0.19.0
-torchaudio==2.4.0
+torch==2.10.0
+torchvision==0.25.0
+torchaudio==2.10.0
+ultralytics==8.4.22
 
 
 # Desktop UI (our PySide6 GUI)
