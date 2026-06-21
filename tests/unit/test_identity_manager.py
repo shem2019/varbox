@@ -40,6 +40,26 @@ def test_identity_manager_assigns_referee_candidate() -> None:
     assert manager.id_for_role("REF") == 30
 
 
+def test_identity_manager_filters_ref_like_detection_from_fighter_pair() -> None:
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[50:190, 20:95] = (20, 20, 220)
+    frame[40:200, 110:210] = (235, 235, 235)
+    frame[50:190, 225:300] = (220, 40, 40)
+
+    poses = {
+        10: {"box": (20, 50, 95, 190), "keypoints": {}, "det_conf": 0.92},
+        30: {"box": (110, 40, 210, 200), "keypoints": {}, "det_conf": 0.99},
+        20: {"box": (225, 50, 300, 190), "keypoints": {}, "det_conf": 0.92},
+    }
+
+    manager = IdentityManager()
+    manager.update(frame, poses, frame_idx=1, timestamp_s=0.033)
+
+    fighter_ids = {manager.live_id_for_role("RED"), manager.live_id_for_role("BLUE")}
+    assert fighter_ids == {10, 20}
+    assert manager.id_for_role("REF") == 30
+
+
 def test_identity_manager_exposes_hypothesis_debug_fields() -> None:
     frame = _make_frame()
     manager = IdentityManager(viterbi_window=8, switch_penalty=2.5)

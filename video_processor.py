@@ -33,7 +33,12 @@ from boxing_analytics.video.timeline import (
 )
 from boxing_analytics.video.progress import ProgressSnapshot, progress_message, progress_percent
 from boxing_analytics.calibration import load_profile
-from boxing_analytics.detection import EventDeduplicator, evaluate_strike
+from boxing_analytics.detection import (
+    EventDeduplicator,
+    RoboflowBoxingAssessor,
+    RoboflowFrameResult,
+    evaluate_strike,
+)
 from boxing_analytics.review import (
     apply_manual_corrections,
     export_evidence_clip,
@@ -649,19 +654,34 @@ def _evaluate_and_record_strike(
     evidence_dir: str,
     clip_dir: str,
     input_video: str,
+    strike_backend: str,
+    roboflow_assessor: RoboflowBoxingAssessor | None,
+    roboflow_result: RoboflowFrameResult | None,
 ) -> tuple[list[dict], list[dict]]:
     events: list[dict] = []
     impacts: list[dict] = []
 
     attacker_k = attacker_data["keypoints"]
     defender_k = defender_data["keypoints"]
-    result = evaluate_strike(
-        attacker_keypoints=attacker_k,
-        defender_keypoints=defender_k,
-        prev_wrists=last_wrists[attacker_role],
-        attacker_box=attacker_data["box"],
-        defender_box=defender_data["box"],
-    )
+    result = None
+    if roboflow_assessor is not None:
+        result = roboflow_assessor.assess_pair(
+            roboflow_result,
+            attacker_keypoints=attacker_k,
+            defender_keypoints=defender_k,
+            attacker_box=attacker_data["box"],
+            defender_box=defender_data["box"],
+        )
+    if result is None and strike_backend in {"local", "hybrid"}:
+        result = evaluate_strike(
+            attacker_keypoints=attacker_k,
+            defender_keypoints=defender_k,
+            prev_wrists=last_wrists[attacker_role],
+            attacker_box=attacker_data["box"],
+            defender_box=defender_data["box"],
+        )
+    if result is None:
+        return events, impacts
 
     hand = result.hand if result.hand in ("L", "R") else "ANY"
     glove_pos = result.glove_position
@@ -708,8 +728,6 @@ def _evaluate_and_record_strike(
         pre_s=0.5,
         post_s=0.5,
     )
-    if not clip_path:
-        return events, impacts
 
     details = {
         "confidence": round(float(result.confidence), 3),
@@ -775,6 +793,11 @@ def process_video(
     evidence_dir = os.getenv("VARBOX_EVIDENCE_DIR", config.PUNCH_EVIDENCE_DIR)
     clip_dir = os.path.join(os.path.dirname(evidence_dir), "event_clips")
     backend = os.getenv("VARBOX_BACKEND", config.BACKEND)
+    strike_backend = os.getenv(
+        "VARBOX_STRIKE_BACKEND", getattr(config, "STRIKE_BACKEND", "local")
+    ).strip().lower()
+    if strike_backend not in {"local", "roboflow", "hybrid"}:
+        raise ValueError("VARBOX_STRIKE_BACKEND must be local, roboflow, or hybrid")
     fps_override = int(os.getenv("VARBOX_FPS_OVERRIDE", "0") or "0")
     red_name = os.getenv("VARBOX_RED_NAME", "Red Corner")
     blue_name = os.getenv("VARBOX_BLUE_NAME", "Blue Corner")
@@ -808,6 +831,37 @@ def process_video(
     native_fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     fps = fps_override or native_fps
+    roboflow_assessor = None
+    if strike_backend in {"roboflow", "hybrid"}:
+        sample_fps = max(
+            0.1,
+            float(
+                os.getenv(
+                    "VARBOX_ROBOFLOW_SAMPLE_FPS",
+                    str(getattr(config, "ROBOFLOW_SAMPLE_FPS", 5.0)),
+                )
+                or "5"
+            ),
+        )
+        roboflow_assessor = RoboflowBoxingAssessor(
+            api_key=os.getenv("ROBOFLOW_API_KEY", ""),
+            api_url=os.getenv(
+                "VARBOX_ROBOFLOW_API_URL",
+                getattr(config, "ROBOFLOW_API_URL", "https://serverless.roboflow.com"),
+            ),
+            model_id=os.getenv(
+                "VARBOX_ROBOFLOW_MODEL_ID",
+                getattr(config, "ROBOFLOW_MODEL_ID", "boxing-vxhil/1"),
+            ),
+            confidence_threshold=float(
+                os.getenv(
+                    "VARBOX_ROBOFLOW_CONFIDENCE",
+                    str(getattr(config, "ROBOFLOW_CONFIDENCE", 0.35)),
+                )
+                or "0.35"
+            ),
+            sample_every_frames=max(1, int(round(float(native_fps) / sample_fps))),
+        )
     progress_interval_frames = max(1, int(max(1, native_fps) * 5))
     id_viterbi_window = int(os.getenv("VARBOX_ID_VITERBI_WINDOW", "25") or "25")
     id_switch_penalty = float(os.getenv("VARBOX_ID_SWITCH_PENALTY", "3.0") or "3.0")
@@ -834,6 +888,13 @@ def process_video(
     stitch_w_motion = float(os.getenv("VARBOX_STITCH_W_MOTION", "1.0") or "1.0")
     stitch_w_appear = float(os.getenv("VARBOX_STITCH_W_APPEAR", "0.6") or "0.6")
     stitch_w_pose = float(os.getenv("VARBOX_STITCH_W_POSE", "0.2") or "0.2")
+    reid_model = str(os.getenv("VARBOX_REID_MODEL", getattr(config, "REID_MODEL", "auto")) or "auto")
+    reid_device = str(
+        os.getenv("VARBOX_REID_DEVICE", getattr(config, "REID_DEVICE", "auto")) or "auto"
+    )
+    reid_imgsz = int(
+        os.getenv("VARBOX_REID_IMGSZ", str(getattr(config, "REID_IMGSZ", 160))) or "160"
+    )
 
     dep_switch_margin = os.getenv("VARBOX_ID_SWITCH_MARGIN", "").strip()
     dep_min_frames_before_switch = os.getenv("VARBOX_ID_MIN_FRAMES_BEFORE_SWITCH", "").strip()
@@ -889,6 +950,9 @@ def process_video(
         stitch_w_motion=stitch_w_motion,
         stitch_w_appear=stitch_w_appear,
         stitch_w_pose=stitch_w_pose,
+        reid_model=reid_model,
+        reid_device=reid_device,
+        reid_imgsz=reid_imgsz,
         switch_margin=float(dep_switch_margin) if dep_switch_margin else None,
         min_frames_before_switch=(
             int(dep_min_frames_before_switch) if dep_min_frames_before_switch else None
@@ -906,6 +970,8 @@ def process_video(
     score_tracker.metadata["blue_name"] = blue_name
     score_tracker.metadata["unknown_corners_mode"] = int(unknown_corners_mode)
     score_tracker.metadata["backend"] = backend
+    score_tracker.metadata["strike_backend"] = strike_backend
+    score_tracker.metadata["scoring_identity_source"] = "identity_manager_only"
     score_tracker.metadata["identity_tuning"] = {
         "viterbi_window": id_viterbi_window,
         "switch_penalty": id_switch_penalty,
@@ -932,6 +998,9 @@ def process_video(
         "stitch_w_motion": stitch_w_motion,
         "stitch_w_appear": stitch_w_appear,
         "stitch_w_pose": stitch_w_pose,
+        "reid_model": reid_model,
+        "reid_device": reid_device,
+        "reid_imgsz": reid_imgsz,
         "deprecated_switch_margin": dep_switch_margin,
         "deprecated_min_frames_before_switch": dep_min_frames_before_switch,
         "deprecated_clinch_iou_freeze": dep_clinch_iou_freeze,
@@ -1082,41 +1151,14 @@ def process_video(
         poses = pose_tracker.process_frame(frame, frame_idx)
 
         identity.update(frame, poses, frame_idx=frame_idx, timestamp_s=timestamp_s)
-        tracker_live_roles = pose_tracker.live_role_status()
+        identity_debug_log = identity.hypothesis_log()
+        identity_debug = identity_debug_log[-1] if identity_debug_log else {}
         tracker_lock_status = pose_tracker.lock_status()
-        frame_role_map: dict[int, str] = {
-            bid: role for bid, role in ((bid, data.get("role")) for bid, data in poses.items()) if role
-        }
+        frame_role_map: dict[int, str] = {}
 
-        red_id = tracker_live_roles.get("RED")
-        blue_id = tracker_live_roles.get("BLUE")
-        ref_id = tracker_live_roles.get("REF")
-        if red_id is None:
-            red_id = identity.live_id_for_role("RED")
-        if blue_id is None:
-            blue_id = identity.live_id_for_role("BLUE")
-
-        if (
-            red_id is None
-            or blue_id is None
-            or red_id not in poses
-            or blue_id not in poses
-            or red_id == blue_id
-        ):
-            fallback_red, fallback_blue = _select_fighter_pair(
-                poses=poses,
-                frame_shape=frame.shape,
-                prev_role_centers=prev_role_centers,
-            )
-            if fallback_red is not None and fallback_red in poses:
-                red_id = fallback_red
-            if fallback_blue is not None and fallback_blue in poses:
-                blue_id = fallback_blue
-
-        if (red_id is None or blue_id is None) and frame_idx <= WARMUP_FRAMES:
-            f_red, f_blue = _warmup_assign(poses)
-            red_id = red_id if red_id is not None else f_red
-            blue_id = blue_id if blue_id is not None else f_blue
+        red_id = identity.live_id_for_role("RED")
+        blue_id = identity.live_id_for_role("BLUE")
+        ref_id = pose_tracker.live_role_status().get("REF")
 
         if red_id is not None and red_id in poses:
             frame_role_map[red_id] = "RED"
@@ -1127,7 +1169,7 @@ def process_video(
         if ref_id is not None and ref_id in poses:
             frame_role_map[ref_id] = "REF"
 
-        if red_id is not None and blue_id is not None and red_id in poses and blue_id in poses:
+        if red_id is not None and blue_id is not None and red_id in poses and blue_id in poses and red_id != blue_id:
             d_red, d_blue = poses[red_id], poses[blue_id]
             k_red, k_blue = d_red["keypoints"], d_blue["keypoints"]
 
@@ -1144,6 +1186,19 @@ def process_video(
                 trails["BLUE"]["L"].append(blue_lw)
             if blue_rw:
                 trails["BLUE"]["R"].append(blue_rw)
+
+            roboflow_result = None
+            if roboflow_assessor is not None and in_round:
+                try:
+                    roboflow_result = roboflow_assessor.infer_frame(frame, frame_idx)
+                except Exception as exc:
+                    if strike_backend == "roboflow":
+                        raise RuntimeError(
+                            f"Roboflow inference failed at frame {frame_idx}: {exc}"
+                        ) from exc
+                    score_tracker.metadata.setdefault("roboflow_errors", []).append(
+                        {"frame": frame_idx, "error": str(exc)}
+                    )
 
             red_events, red_impacts = _evaluate_and_record_strike(
                 attacker_role="RED",
@@ -1165,6 +1220,9 @@ def process_video(
                 evidence_dir=evidence_dir,
                 clip_dir=clip_dir,
                 input_video=input_video,
+                strike_backend=strike_backend,
+                roboflow_assessor=roboflow_assessor,
+                roboflow_result=roboflow_result,
             )
             classified_events.extend(red_events)
             impacts.extend(red_impacts)
@@ -1189,6 +1247,9 @@ def process_video(
                 evidence_dir=evidence_dir,
                 clip_dir=clip_dir,
                 input_video=input_video,
+                strike_backend=strike_backend,
+                roboflow_assessor=roboflow_assessor,
+                roboflow_result=roboflow_result,
             )
             classified_events.extend(blue_events)
             impacts.extend(blue_impacts)
@@ -1221,7 +1282,12 @@ def process_video(
 
         for bid, data in poses.items():
             x1, y1, x2, y2 = data["box"]
-            role = data.get("role") or frame_role_map.get(bid) or identity.role_for_id(bid)
+            tracker_role = str(data.get("role") or "").upper()
+            role = frame_role_map.get(bid)
+            if role is None and tracker_role == "REF":
+                role = "REF"
+            if role is None:
+                role = identity.role_for_id(bid)
             if role is None and frame_idx <= WARMUP_FRAMES:
                 if red_id == bid:
                     role = "RED"
@@ -1252,12 +1318,9 @@ def process_video(
         _draw_wrist_trails(frame, trails)
         impacts = _draw_recent_impacts(frame, impacts)
         lock_status = identity.role_status()
-        for role, track_id in pose_tracker.role_status().items():
-            if track_id is not None:
-                lock_status[role] = track_id
-        for role, track_id in tracker_lock_status.items():
-            if track_id is not None:
-                lock_status[role] = track_id
+        ref_lock = tracker_lock_status.get("REF")
+        if ref_lock is not None:
+            lock_status["REF"] = ref_lock
         _overlay_top_bar(frame, score_tracker, red_name, blue_name, lock_status)
 
         out.write(frame)
@@ -1267,6 +1330,9 @@ def process_video(
     cap.release()
     if out is not None:
         out.release()
+
+    if roboflow_assessor is not None:
+        score_tracker.metadata["roboflow"] = roboflow_assessor.diagnostics()
 
     score_tracker.metadata["manual_seed_status"] = pose_tracker.manual_seed_status()
 
@@ -1406,12 +1472,9 @@ def process_video(
     score_tracker.metadata["deductions"] = stats.deductions
     score_tracker.metadata["fouls"] = stats.fouls
     final_lock_status = identity.role_status()
-    for role, track_id in pose_tracker.role_status().items():
-        if track_id is not None:
-            final_lock_status[role] = track_id
-    for role, track_id in pose_tracker.lock_status().items():
-        if track_id is not None:
-            final_lock_status[role] = track_id
+    ref_lock = pose_tracker.lock_status().get("REF")
+    if ref_lock is not None:
+        final_lock_status["REF"] = ref_lock
     score_tracker.metadata["corner_lock"] = {
         "RED": final_lock_status.get("RED"),
         "BLUE": final_lock_status.get("BLUE"),

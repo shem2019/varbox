@@ -72,3 +72,35 @@ def test_pipeline_detects_landed_or_glancing() -> None:
     )
     assert out.label in {"landed_clean", "landed_glancing"}
     assert out.target_zone in {"Head", "Body"}
+
+
+def test_pipeline_counts_contact_when_glove_enters_defender_box() -> None:
+    attacker = _pose(
+        nose=(80, 60),
+        lw=(162, 88),
+        rw=(120, 120),
+        ls=(72, 92),
+        rs=(92, 92),
+        lh=(74, 132),
+        rh=(90, 132),
+    )
+    defender = _pose(
+        nose=(168, 82),
+        lw=(138, 102),
+        rw=(188, 104),
+        ls=(154, 98),
+        rs=(178, 98),
+        lh=(156, 144),
+        rh=(176, 144),
+    )
+
+    out = evaluate_strike(
+        attacker_keypoints=attacker,
+        defender_keypoints=defender,
+        prev_wrists={"L": (144, 96), "R": (118, 120)},
+        attacker_box=(70, 54, 168, 184),
+        defender_box=(146, 58, 220, 188),
+    )
+
+    assert out.label in {"landed_clean", "landed_glancing", "blocked_guarded"}
+    assert "box_dist" in out.features

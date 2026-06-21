@@ -30,6 +30,23 @@ RESOLVED_BACKEND = RUNTIME_PROFILE.preferred_backend
 YOLO_DEVICE = os.getenv("VARBOX_YOLO_DEVICE", RUNTIME_PROFILE.yolo_device)
 YOLO_IMGSZ = int(os.getenv("VARBOX_YOLO_IMGSZ", str(RUNTIME_PROFILE.yolo_imgsz)) or "640")
 YOLO_HALF = int(os.getenv("VARBOX_YOLO_HALF", "1" if RUNTIME_PROFILE.yolo_half else "0") or "0")
+YOLO_TRACKER = os.getenv(
+    "VARBOX_YOLO_TRACKER",
+    "botsort",
+).strip().lower()
+YOLO_TRACKER_CONFIG = os.getenv("VARBOX_YOLO_TRACKER_CONFIG", "").strip()
+YOLO_TRACK_PERSIST = int(os.getenv("VARBOX_YOLO_TRACK_PERSIST", "1") or "1")
+YOLO_TRACK_CONF = float(os.getenv("VARBOX_YOLO_TRACK_CONF", "0.15") or "0.15")
+YOLO_TRACK_IOU = float(os.getenv("VARBOX_YOLO_TRACK_IOU", "0.45") or "0.45")
+REID_MODEL = os.getenv(
+    "VARBOX_REID_MODEL",
+    "osnet_ain_x1_0",
+).strip().lower()
+REID_DEVICE = os.getenv(
+    "VARBOX_REID_DEVICE",
+    "mps" if RUNTIME_PROFILE.has_mps else "cpu",
+).strip().lower()
+REID_IMGSZ = int(os.getenv("VARBOX_REID_IMGSZ", "256") or "256")
 POSE_MODEL_COMPLEXITY = int(
     os.getenv("VARBOX_POSE_MODEL_COMPLEXITY", str(RUNTIME_PROFILE.pose_model_complexity)) or "1"
 )
@@ -40,6 +57,15 @@ POSE_ENABLE_SEGMENTATION = int(
     )
     or "0"
 )
+
+# Strike assessment is independent from the pose/tracking backend above.
+STRIKE_BACKEND = os.getenv("VARBOX_STRIKE_BACKEND", "local").strip().lower()
+ROBOFLOW_API_URL = os.getenv(
+    "VARBOX_ROBOFLOW_API_URL", "https://serverless.roboflow.com"
+).strip()
+ROBOFLOW_MODEL_ID = os.getenv("VARBOX_ROBOFLOW_MODEL_ID", "boxing-vxhil/1").strip()
+ROBOFLOW_CONFIDENCE = float(os.getenv("VARBOX_ROBOFLOW_CONFIDENCE", "0.35") or "0.35")
+ROBOFLOW_SAMPLE_FPS = float(os.getenv("VARBOX_ROBOFLOW_SAMPLE_FPS", "5") or "5")
 
 # Output orientation control.
 # "portrait": rotate landscape frames to portrait.
@@ -66,8 +92,12 @@ DNN_MODEL = os.getenv(
     os.path.join(ASSETS_DIR, "models", "mobilenet_ssd", "deploy.caffemodel"),
 )
 
-# YOLOv8 weights (Pro build)
-YOLOV8_WEIGHTS = os.getenv("VARBOX_YOLOV8_WEIGHTS", os.path.join(ASSETS_DIR, "models", "yolov8n.pt"))
+# Ultralytics pose weights. `VARBOX_YOLOV8_WEIGHTS` is kept as a legacy alias.
+YOLO_POSE_WEIGHTS = os.getenv(
+    "VARBOX_YOLO_POSE_WEIGHTS",
+    os.getenv("VARBOX_YOLOV8_WEIGHTS", os.path.join(ASSETS_DIR, "models", "yolo11m-pose.pt")),
+)
+YOLOV8_WEIGHTS = YOLO_POSE_WEIGHTS
 POSE_TASK_MODEL = os.getenv(
     "VARBOX_POSE_TASK_MODEL",
     os.path.join(ASSETS_DIR, "models", "mediapipe", "pose_landmarker_lite.task"),

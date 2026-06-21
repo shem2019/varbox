@@ -61,6 +61,20 @@ def _targets(
     return head, body
 
 
+def _target_scale(
+    defender_keypoints: Mapping[int, object],
+    defender_box: tuple[int, int, int, int],
+) -> float:
+    ls = _as_point(defender_keypoints.get(LEFT_SHOULDER))
+    rs = _as_point(defender_keypoints.get(RIGHT_SHOULDER))
+    if ls is not None and rs is not None:
+        shoulder_span = ((ls[0] - rs[0]) ** 2 + (ls[1] - rs[1]) ** 2) ** 0.5
+        if shoulder_span > 1.0:
+            return float(shoulder_span)
+    x1, y1, x2, y2 = defender_box
+    return float(max(40.0, 0.30 * ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5))
+
+
 def evaluate_strike(
     attacker_keypoints: Mapping[int, object],
     defender_keypoints: Mapping[int, object],
@@ -75,11 +89,14 @@ def evaluate_strike(
         defender_box=defender_box,
     )
     head_target, body_target = _targets(defender_keypoints)
+    target_scale = _target_scale(defender_keypoints, defender_box)
     overlap = _bbox_overlap(attacker_box, defender_box)
     return classify_contact(
         gloves=gloves,
         guard=guard,
         head_target=head_target,
         body_target=body_target,
+        defender_box=defender_box,
+        target_scale=target_scale,
         overlap_ratio=overlap,
     )

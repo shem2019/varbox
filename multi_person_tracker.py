@@ -1,61 +1,68 @@
 # multi_person_tracker.py
 
+import importlib.util
 import json
 import math
 import os
+
 import cv2
 import numpy as np
 
-from boxer_registry import BoxerRegistry
-from identity_bootstrap import IdentityBootstrap
 from color_signature import compute_hist_signature, signature_similarity
 from config import (
     BACKEND,
     DNN_MODEL,
     DNN_PROTO,
     IS_APPLE_SILICON,
-    POSE_ENABLE_SEGMENTATION,
-    POSE_MODEL_COMPLEXITY,
-    POSE_TASK_MODEL,
     YOLO_DEVICE,
     YOLO_HALF,
     YOLO_IMGSZ,
-    YOLOV8_WEIGHTS,
+    YOLO_POSE_WEIGHTS,
+    YOLO_TRACK_CONF,
+    YOLO_TRACK_IOU,
+    YOLO_TRACK_PERSIST,
+    YOLO_TRACKER,
+    YOLO_TRACKER_CONFIG,
 )
-from mediapipe_compat import PoseLandmark, create_pose_estimator
+from mediapipe_compat import PoseLandmark
 from runtime_profile import resolve_backend
 
 POSE = PoseLandmark
-
-
-def pad_to_square(image):
-    h, w = image.shape[:2]
-    size = max(h, w)
-    top = (size - h) // 2
-    bottom = size - h - top
-    left = (size - w) // 2
-    right = size - w - left
-    padded = cv2.copyMakeBorder(
-        image, top, bottom, left, right, borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0)
-    )
-    return padded, top, left
+_COCO17_TO_MEDIAPIPE = {
+    0: int(POSE.NOSE),
+    1: 2,
+    2: 5,
+    3: 7,
+    4: 8,
+    5: int(POSE.LEFT_SHOULDER),
+    6: int(POSE.RIGHT_SHOULDER),
+    7: int(POSE.LEFT_ELBOW),
+    8: int(POSE.RIGHT_ELBOW),
+    9: int(POSE.LEFT_WRIST),
+    10: int(POSE.RIGHT_WRIST),
+    11: int(POSE.LEFT_HIP),
+    12: int(POSE.RIGHT_HIP),
+    13: 25,
+    14: 26,
+    15: int(POSE.LEFT_ANKLE),
+    16: int(POSE.RIGHT_ANKLE),
+}
 
 
 class MultiPersonPoseTracker:
-    def __init__(self, confidence=0.5, bootstrap_frames=30, backend=None):
+    def __init__(
+        self,
+        confidence=0.5,
+        bootstrap_frames=30,
+        backend=None,
+        manual_ring_roi=None,
+        manual_seeds=None,
+    ):
         requested_backend = backend or BACKEND
         self.backend = resolve_backend(
             requested_backend,
             is_apple_silicon=IS_APPLE_SILICON,
         )
-        self.registry = BoxerRegistry(max_distance=0.34)
-        self.pose = create_pose_estimator(
-            confidence=confidence,
-            enable_segmentation=bool(POSE_ENABLE_SEGMENTATION),
-            model_complexity=POSE_MODEL_COMPLEXITY,
-            task_model_path=POSE_TASK_MODEL,
-        )
-        self.bootstrap = IdentityBootstrap(frames=bootstrap_frames, min_samples=5)
         self.role_map = {}  # boxer_id -> role
         self.id_color_sig = {}  # boxer_id -> running avg hist signature
         self.person_model = None
@@ -63,6 +70,8 @@ class MultiPersonPoseTracker:
         self.max_people = 8
         self.max_ring_candidates = 5
         self.min_box_area = 80 * 80
+        self.ring_min_box_inside_ratio = 0.55
+        self.ring_min_pose_points_inside = 2
         self.last_tracks = []
         self.current_role_to_id = {}
         self.persistent_role_to_id = {}
@@ -72,8 +81,20 @@ class MultiPersonPoseTracker:
         self.yolo_device = YOLO_DEVICE
         self.yolo_imgsz = YOLO_IMGSZ
         self.yolo_half = bool(YOLO_HALF)
-        self.manual_ring_roi = self._load_manual_ring_roi()
-        self.manual_seeds = self._load_manual_seeds()
+        tracker_name = (YOLO_TRACKER or "bytetrack").strip().lower()
+        self.yolo_tracker = tracker_name if tracker_name in {"bytetrack", "botsort"} else "bytetrack"
+        self.yolo_track_persist = bool(YOLO_TRACK_PERSIST)
+        self.yolo_track_conf = float(max(0.01, min(0.95, YOLO_TRACK_CONF)))
+        self.yolo_track_iou = float(max(0.05, min(0.95, YOLO_TRACK_IOU)))
+        self.yolo_tracker_config = self._resolve_tracker_config_path(
+            requested_path=YOLO_TRACKER_CONFIG,
+            tracker_name=self.yolo_tracker,
+        )
+        self._yolo_track_issue = None
+        self.manual_ring_roi = (
+            manual_ring_roi if manual_ring_roi is not None else self._load_manual_ring_roi()
+        )
+        self.manual_seeds = manual_seeds if manual_seeds is not None else self._load_manual_seeds()
         self.manual_role_state = {
             role: {
                 "track_id": None,
@@ -88,6 +109,90 @@ class MultiPersonPoseTracker:
             for role in self.manual_seeds
         }
         self._init_detector()
+
+    @staticmethod
+    def _lap_available():
+        return importlib.util.find_spec("lap") is not None
+
+    @staticmethod
+    def _expand_box(box, frame_shape, x_margin=0.18, y_margin_top=0.18, y_margin_bottom=0.10):
+        x1, y1, x2, y2 = [int(v) for v in box[:4]]
+        h, w = frame_shape[:2]
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        mx = int(round(bw * x_margin))
+        my_top = int(round(bh * y_margin_top))
+        my_bottom = int(round(bh * y_margin_bottom))
+        ex1 = max(0, x1 - mx)
+        ey1 = max(0, y1 - my_top)
+        ex2 = min(w, x2 + mx)
+        ey2 = min(h, y2 + my_bottom)
+        return ex1, ey1, ex2, ey2
+
+    @staticmethod
+    def _tracker_assets_dir():
+        return os.path.join(os.path.dirname(__file__), "assets", "trackers")
+
+    @classmethod
+    def _resolve_tracker_config_path(cls, requested_path, tracker_name):
+        if requested_path and os.path.isfile(requested_path):
+            return requested_path
+        filename = f"{tracker_name}_fixedcam.yaml"
+        candidate = os.path.join(cls._tracker_assets_dir(), filename)
+        if os.path.isfile(candidate):
+            return candidate
+        return None
+
+    @staticmethod
+    def _as_numpy(data):
+        if data is None:
+            return None
+        if hasattr(data, "detach"):
+            data = data.detach()
+        if hasattr(data, "cpu"):
+            data = data.cpu()
+        if hasattr(data, "numpy"):
+            try:
+                return data.numpy()
+            except Exception:
+                return None
+        return np.asarray(data)
+
+    @staticmethod
+    def _remap_pose_keypoints(keypoints_xy, keypoints_conf=None):
+        xy = np.asarray(keypoints_xy, dtype=np.float32)
+        conf = None if keypoints_conf is None else np.asarray(keypoints_conf, dtype=np.float32)
+        if xy.ndim != 2 or xy.shape[1] < 2:
+            return {}
+
+        mapped = {}
+        for coco_idx, pose_idx in _COCO17_TO_MEDIAPIPE.items():
+            if coco_idx >= len(xy):
+                continue
+            x = float(xy[coco_idx, 0])
+            y = float(xy[coco_idx, 1])
+            score = 1.0
+            if conf is not None and coco_idx < len(conf):
+                score = float(conf[coco_idx])
+            if not np.isfinite(x) or not np.isfinite(y) or score <= 0.0:
+                continue
+            mapped[int(pose_idx)] = [int(round(x)), int(round(y)), float(max(0.0, min(1.0, score)))]
+        return mapped
+
+    @staticmethod
+    def _entry_box(entry):
+        if isinstance(entry, dict):
+            return (
+                int(entry["x1"]),
+                int(entry["y1"]),
+                int(entry["x2"]),
+                int(entry["y2"]),
+                float(entry.get("conf", 1.0)),
+            )
+        row = tuple(entry)
+        if len(row) >= 5:
+            return int(row[0]), int(row[1]), int(row[2]), int(row[3]), float(row[4])
+        return int(row[0]), int(row[1]), int(row[2]), int(row[3]), 1.0
 
     @staticmethod
     def _load_manual_ring_roi():
@@ -129,6 +234,55 @@ class MultiPersonPoseTracker:
         if len(points) < 3:
             return None
         return points
+
+    def _manual_ring_mask(self, frame_shape):
+        polygon = self._manual_ring_polygon(frame_shape)
+        if polygon is None:
+            return None
+        h, w = frame_shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, polygon, 255)
+        return mask
+
+    def _box_inside_ring_ratio(self, box, ring_mask):
+        if ring_mask is None:
+            return 1.0
+        x1, y1, x2, y2 = box[:4]
+        h, w = ring_mask.shape[:2]
+        x1 = max(0, min(w - 1, int(x1)))
+        x2 = max(0, min(w, int(x2)))
+        y1 = max(0, min(h - 1, int(y1)))
+        y2 = max(0, min(h, int(y2)))
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        roi = ring_mask[y1:y2, x1:x2]
+        if roi.size == 0:
+            return 0.0
+        inside = float(cv2.countNonZero(roi))
+        return inside / float(roi.shape[0] * roi.shape[1])
+
+    def _pose_inside_ring(self, keypoints, frame_shape):
+        polygon = self._manual_ring_polygon(frame_shape)
+        if polygon is None:
+            return True
+        checks = [
+            POSE.NOSE,
+            POSE.LEFT_SHOULDER,
+            POSE.RIGHT_SHOULDER,
+            POSE.LEFT_HIP,
+            POSE.RIGHT_HIP,
+            POSE.LEFT_ANKLE,
+            POSE.RIGHT_ANKLE,
+        ]
+        inside_count = 0
+        for idx in checks:
+            row = keypoints.get(idx)
+            if not isinstance(row, (tuple, list)) or len(row) < 2:
+                continue
+            pt = (float(row[0]), float(row[1]))
+            if cv2.pointPolygonTest(polygon, pt, False) >= 0:
+                inside_count += 1
+        return inside_count >= self.ring_min_pose_points_inside
 
     @staticmethod
     def _load_manual_seeds():
@@ -370,6 +524,31 @@ class MultiPersonPoseTracker:
             self._bind_role(role, track_id, locked=False)
 
     def _ring_gate_boxes(self, frame, boxes):
+        polygon = self._manual_ring_polygon(frame.shape)
+        if polygon is not None:
+            ring_mask = self._manual_ring_mask(frame.shape)
+            inside_boxes = []
+            for entry in boxes:
+                x1, y1, x2, y2, _ = self._entry_box(entry)
+                cx = (x1 + x2) * 0.5
+                cy = (y1 + y2) * 0.5
+                foot_pt = (float(cx), float(y2 - 1))
+                center_pt = (float(cx), float(cy))
+                inside_ratio = self._box_inside_ring_ratio((x1, y1, x2, y2), ring_mask)
+                inside = (
+                    inside_ratio >= self.ring_min_box_inside_ratio
+                    or (
+                        inside_ratio >= 0.25
+                        and (
+                            cv2.pointPolygonTest(polygon, foot_pt, False) >= 0
+                            or cv2.pointPolygonTest(polygon, center_pt, False) >= 0
+                        )
+                    )
+                )
+                if inside:
+                    inside_boxes.append(entry)
+            boxes = inside_boxes
+
         if len(boxes) <= 2:
             return boxes
 
@@ -378,11 +557,9 @@ class MultiPersonPoseTracker:
         cx0 = w * 0.5
         cy0 = h * 0.5
         scored = []
-        polygon = self._manual_ring_polygon(frame.shape)
-        inside_boxes = []
 
-        for box in boxes:
-            x1, y1, x2, y2, conf = box
+        for entry in boxes:
+            x1, y1, x2, y2, conf = self._entry_box(entry)
             bw = max(1, x2 - x1)
             bh = max(1, y2 - y1)
             cx = (x1 + x2) * 0.5
@@ -395,19 +572,6 @@ class MultiPersonPoseTracker:
             aspect_score = max(0.0, 1.0 - abs(aspect - 2.0) / 2.0)
             vertical_band = 1.0 if 0.10 * h <= cy <= 0.92 * h else 0.0
             boundary_penalty = 0.8 if y2 >= 0.985 * h or x1 <= 0 or x2 >= w - 1 else 0.0
-            ring_bonus = 0.0
-            if polygon is not None:
-                foot_pt = (float(cx), float(y2 - 1))
-                center_pt = (float(cx), float(cy))
-                inside = (
-                    cv2.pointPolygonTest(polygon, foot_pt, False) >= 0
-                    or cv2.pointPolygonTest(polygon, center_pt, False) >= 0
-                )
-                if inside:
-                    ring_bonus = 3.0
-                    inside_boxes.append(box)
-                else:
-                    ring_bonus = -3.5
             score = (
                 1.4 * centrality
                 + 0.9 * edge_margin
@@ -415,35 +579,25 @@ class MultiPersonPoseTracker:
                 + 0.35 * vertical_band
                 + 0.4 * float(conf)
                 + 0.00003 * area
-                + ring_bonus
                 - boundary_penalty
             )
-            scored.append((score, box))
-
-        if len(inside_boxes) >= 2:
-            inside_boxes.sort(key=lambda b: ((b[3] - b[1]) * (b[2] - b[0]), b[4]), reverse=True)
-            return inside_boxes[: self.max_ring_candidates]
+            scored.append((score, entry))
 
         scored.sort(key=lambda item: item[0], reverse=True)
-        kept = [box for _, box in scored[: self.max_ring_candidates]]
+        kept = [entry for _, entry in scored[: self.max_ring_candidates]]
         if len(kept) >= 2:
             return kept
         return boxes[: self.max_ring_candidates]
 
     def _init_detector(self):
         requested = self.backend
-        if requested == "opencv" and os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL):
-            self.person_model = cv2.dnn.readNetFromCaffe(DNN_PROTO, DNN_MODEL)
-            self.person_model_kind = "opencv"
-            return
-
         try:
             from ultralytics import YOLO  # pylint: disable=import-outside-toplevel
 
-            candidates = [YOLOV8_WEIGHTS, os.path.join(os.path.dirname(__file__), "yolov8n.pt")]
-            weights = next((p for p in candidates if p and os.path.isfile(p)), "yolov8n.pt")
+            candidates = [YOLO_POSE_WEIGHTS, os.path.join(os.path.dirname(__file__), "yolo11m-pose.pt")]
+            weights = next((p for p in candidates if p and os.path.isfile(p)), "yolo11m-pose.pt")
             self.person_model = YOLO(weights)
-            self.person_model_kind = "yolov8"
+            self.person_model_kind = "ultralytics_pose"
             return
         except Exception as exc:
             if requested == "opencv" and os.path.isfile(DNN_PROTO) and os.path.isfile(DNN_MODEL):
@@ -451,30 +605,101 @@ class MultiPersonPoseTracker:
                 self.person_model_kind = "opencv"
                 return
             raise RuntimeError(
-                f"Unable to initialize person detector. backend={requested}, error={exc}"
+                f"Unable to initialize pose tracker. backend={requested}, error={exc}"
             ) from exc
 
-    def _detect_people_yolov8(self, frame):
-        results = self.person_model.predict(
-            frame,
-            classes=[0],
-            verbose=False,
-            device=self.yolo_device,
-            imgsz=self.yolo_imgsz,
-            half=self.yolo_half,
-            max_det=self.max_people,
-        )[0]
-        boxes = []
-        for det in results.boxes.data.tolist():
-            x1, y1, x2, y2, conf, *_ = det
-            if conf < 0.25:
+    def _detect_people_yolo_pose(self, frame):
+        if self.person_model is None:
+            return []
+
+        common_kwargs = {
+            "classes": [0],
+            "verbose": False,
+            "device": self.yolo_device,
+            "imgsz": self.yolo_imgsz,
+            "half": self.yolo_half,
+            "max_det": self.max_people,
+            "conf": self.yolo_track_conf,
+            "iou": self.yolo_track_iou,
+        }
+
+        result = None
+        tracking = self.tracking_diagnostics()
+        if tracking["enabled"]:
+            try:
+                tracked = self.person_model.track(
+                    frame,
+                    persist=self.yolo_track_persist,
+                    tracker=self.yolo_tracker_config,
+                    **common_kwargs,
+                )
+                result = tracked[0] if isinstance(tracked, list) and tracked else tracked
+            except Exception as exc:
+                self._yolo_track_issue = f"{type(exc).__name__}: {exc}"
+                result = None
+
+        if result is None:
+            predicted = self.person_model.predict(frame, **common_kwargs)
+            result = predicted[0] if isinstance(predicted, list) and predicted else predicted
+
+        boxes_attr = getattr(result, "boxes", None)
+        if boxes_attr is None:
+            return []
+
+        xyxy = self._as_numpy(getattr(boxes_attr, "xyxy", None))
+        conf = self._as_numpy(getattr(boxes_attr, "conf", None))
+        track_ids = self._as_numpy(getattr(boxes_attr, "id", None))
+        classes = self._as_numpy(getattr(boxes_attr, "cls", None))
+        if xyxy is None:
+            return []
+
+        detections = []
+        keypoints_attr = getattr(result, "keypoints", None)
+        keypoints_xy = self._as_numpy(getattr(keypoints_attr, "xy", None))
+        keypoints_conf = self._as_numpy(getattr(keypoints_attr, "conf", None))
+        for idx, coords in enumerate(np.asarray(xyxy)):
+            if len(coords) < 4:
                 continue
-            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            cls_id = int(classes[idx]) if classes is not None and idx < len(classes) else 0
+            if cls_id != 0:
+                continue
+            det_conf = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+            if det_conf < self.yolo_track_conf:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in coords[:4]]
             if (x2 - x1) * (y2 - y1) < self.min_box_area:
                 continue
-            boxes.append((x1, y1, x2, y2, float(conf)))
-        boxes.sort(key=lambda b: b[4], reverse=True)
-        return boxes[: self.max_people]
+            track_id = None
+            if track_ids is not None and idx < len(track_ids):
+                raw_id = float(track_ids[idx])
+                if np.isfinite(raw_id):
+                    track_id = int(raw_id)
+            pose_points = None
+            if keypoints_xy is not None and idx < len(keypoints_xy):
+                pose_points = self._remap_pose_keypoints(
+                    keypoints_xy[idx],
+                    None if keypoints_conf is None or idx >= len(keypoints_conf) else keypoints_conf[idx],
+                )
+            detections.append(
+                {
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "conf": det_conf,
+                    "track_id": track_id,
+                    "keypoints": pose_points or {},
+                    "mask": None,
+                }
+            )
+        detections.sort(
+            key=lambda row: (
+                row["track_id"] is None,
+                -float(row["conf"]),
+                -float((row["x2"] - row["x1"]) * (row["y2"] - row["y1"])),
+            )
+        )
+        return detections[: self.max_people]
 
     def _detect_people_opencv(self, frame):
         h, w = frame.shape[:2]
@@ -505,10 +730,14 @@ class MultiPersonPoseTracker:
         return boxes[: self.max_people]
 
     def detect_people(self, frame):
+        ring_mask = self._manual_ring_mask(frame.shape)
+        detector_frame = frame
+        if ring_mask is not None:
+            detector_frame = cv2.bitwise_and(frame, frame, mask=ring_mask)
         if self.person_model_kind == "opencv":
-            boxes = self._detect_people_opencv(frame)
+            boxes = self._detect_people_opencv(detector_frame)
         else:
-            boxes = self._detect_people_yolov8(frame)
+            boxes = self._detect_people_yolo_pose(detector_frame)
         return self._ring_gate_boxes(frame, boxes)
 
     def _update_color_sig(self, boxer_id, frame, box, alpha=0.15):
@@ -527,53 +756,31 @@ class MultiPersonPoseTracker:
         track_rows = []
         self.current_role_to_id = {}
 
-        for detection_index, entry in enumerate(people_boxes):
-            if len(entry) >= 5:
-                x1, y1, x2, y2, det_conf = entry
+        for entry in people_boxes:
+            source_track_id = None
+            keypoints = {}
+            mask = None
+            if isinstance(entry, dict):
+                x1, y1, x2, y2, det_conf = self._entry_box(entry)
+                source_track_id = entry.get("track_id")
+                keypoints = entry.get("keypoints") or {}
+                mask = entry.get("mask")
             else:
-                x1, y1, x2, y2 = entry[:4]
-                det_conf = 1.0
-            crop = frame[y1:y2, x1:x2]
-            if crop.size == 0:
+                if len(entry) >= 5:
+                    x1, y1, x2, y2, det_conf = self._entry_box(entry)
+                else:
+                    x1, y1, x2, y2 = entry[:4]
+                    det_conf = 1.0
+            if source_track_id is None:
                 continue
-            padded_crop, pad_top, pad_left = pad_to_square(crop)
-            rgb_crop = cv2.cvtColor(padded_crop, cv2.COLOR_BGR2RGB)
-            results = self.pose.process(rgb_crop, frame_num * 1000 + detection_index)
-
-            if not results.pose_landmarks:
+            if not keypoints:
+                continue
+            if not self._pose_inside_ring(keypoints, frame.shape):
                 continue
 
-            landmarks = results.pose_landmarks.landmark
-            h, w = padded_crop.shape[:2]
-            keypoints = {
-                idx: [
-                    int(landmark.x * w + x1 - pad_left),
-                    int(landmark.y * h + y1 - pad_top),
-                    float(max(0.0, min(1.0, landmark.visibility))),
-                ]
-                for idx, landmark in enumerate(landmarks)
-            }
-
-            required = [
-                POSE.NOSE,
-                POSE.LEFT_WRIST,
-                POSE.RIGHT_WRIST,
-                POSE.LEFT_SHOULDER,
-                POSE.RIGHT_SHOULDER,
-            ]
-            boxer_id = self.registry.match_or_register(keypoints, frame_num, required)
-            if boxer_id is None:
-                continue
+            boxer_id = int(source_track_id)
 
             self._update_color_sig(boxer_id, frame, (x1, y1, x2, y2))
-
-            if not self.bootstrap.finalized:
-                self.bootstrap.add_observation(frame_num, boxer_id, frame, (x1, y1, x2, y2))
-                if self.bootstrap.ready(frame_num):
-                    bootstrap_roles = self.bootstrap.finalize()
-                    self._merge_bootstrap_roles(bootstrap_roles)
-                    if bootstrap_roles:
-                        print(f"Bootstrap roles: {bootstrap_roles}")
 
             center = ((x1 + x2) // 2, (y1 + y2) // 2)
             track_rows.append(
@@ -582,7 +789,7 @@ class MultiPersonPoseTracker:
                     "bbox": (x1, y1, x2, y2),
                     "center": center,
                     "keypoints": keypoints,
-                    "mask": results.segmentation_mask,
+                    "mask": mask,
                     "det_conf": float(det_conf),
                 }
             )
@@ -608,12 +815,57 @@ class MultiPersonPoseTracker:
                 "det_conf": float(row["det_conf"]),
             }
 
-        self.registry.clean_old_ids(frame_num)
         self.last_tracks = track_rows
         return poses_by_id
 
     def latest_tracks(self):
         return list(self.last_tracks)
+
+    def tracking_diagnostics(self):
+        if self.person_model_kind != "ultralytics_pose":
+            return {
+                "enabled": False,
+                "mode": "unavailable",
+                "issue": "Active backend does not provide Ultralytics pose track IDs.",
+                "tracker": self.yolo_tracker,
+                "tracker_config": self.yolo_tracker_config,
+                "person_model_kind": self.person_model_kind,
+            }
+        if not self.yolo_tracker_config:
+            return {
+                "enabled": False,
+                "mode": "unavailable",
+                "issue": "No tracker configuration file was resolved.",
+                "tracker": self.yolo_tracker,
+                "tracker_config": self.yolo_tracker_config,
+                "person_model_kind": self.person_model_kind,
+            }
+        if self._yolo_track_issue:
+            return {
+                "enabled": False,
+                "mode": "predict_only",
+                "issue": self._yolo_track_issue,
+                "tracker": self.yolo_tracker,
+                "tracker_config": self.yolo_tracker_config,
+                "person_model_kind": self.person_model_kind,
+            }
+        if not self._lap_available():
+            return {
+                "enabled": False,
+                "mode": "predict_only",
+                "issue": "Missing optional dependency 'lap' required by the Ultralytics tracker.",
+                "tracker": self.yolo_tracker,
+                "tracker_config": self.yolo_tracker_config,
+                "person_model_kind": self.person_model_kind,
+            }
+        return {
+            "enabled": True,
+            "mode": "track",
+            "issue": None,
+            "tracker": self.yolo_tracker,
+            "tracker_config": self.yolo_tracker_config,
+            "person_model_kind": self.person_model_kind,
+        }
 
     def role_status(self):
         status = dict(self.persistent_role_to_id)

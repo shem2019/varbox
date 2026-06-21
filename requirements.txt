@@ -3,6 +3,7 @@
 
 # Numeric stack
 numpy==2.4.3
+lap==0.5.13
 scipy==1.17.1
 mediapipe==0.10.32
 # Vision & pose
@@ -15,7 +16,10 @@ protobuf==7.34.0
 torch==2.10.0
 torchvision==0.25.0
 torchaudio==2.10.0
+gdown==5.2.1
+torchreid==0.2.5
 ultralytics==8.4.22
+certifi==2026.6.17
 
 
 # Desktop UI (our PySide6 GUI)

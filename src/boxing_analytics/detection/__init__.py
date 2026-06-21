@@ -8,6 +8,7 @@ from boxing_analytics.detection.models import (
     GuardState,
 )
 from boxing_analytics.detection.pipeline import evaluate_strike
+from boxing_analytics.detection.roboflow import RoboflowBoxingAssessor, RoboflowFrameResult
 
 __all__ = [
     "ContactClassification",
@@ -15,5 +16,7 @@ __all__ = [
     "EventDeduplicator",
     "GloveState",
     "GuardState",
+    "RoboflowBoxingAssessor",
+    "RoboflowFrameResult",
     "evaluate_strike",
 ]

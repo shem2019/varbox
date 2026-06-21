@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import cv2
+import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
@@ -49,6 +50,10 @@ from boxing_analytics.review import (
     save_review_session,
 )
 from boxing_analytics.calibration import load_profile
+from boxing_analytics.app.system_check import (
+    format_guided_system_check,
+    run_guided_system_check,
+)
 from opencv_guard import install_opencv_circle_guard
 from score_tracker import ScoreTracker
 from scorecard_generator import generate_scorecard
@@ -185,22 +190,101 @@ def _load_annotation_buffer(
     return frames
 
 
-def _collect_manual_seed_annotations(video_path: str, max_frames: int = 500) -> Optional[Dict]:
+def _preview_polygon_points(data: Dict, normalized_points: List[List[float]]) -> np.ndarray:
+    preview = data["preview"]
+    ph, pw = preview.shape[:2]
+    return np.asarray(
+        [
+            [int(round(float(px) * pw)), int(round(float(py) * ph))]
+            for px, py in normalized_points
+        ],
+        dtype=np.int32,
+    )
+
+
+def _focus_preview_to_ring(
+    preview: np.ndarray,
+    normalized_points: Optional[List[List[float]]],
+    edge_color: tuple[int, int, int] = (24, 190, 255),
+) -> np.ndarray:
+    if not normalized_points:
+        return preview.copy()
+    ph, pw = preview.shape[:2]
+    polygon = np.asarray(
+        [
+            [int(round(float(px) * pw)), int(round(float(py) * ph))]
+            for px, py in normalized_points
+        ],
+        dtype=np.int32,
+    )
+    if len(polygon) < 3:
+        return preview.copy()
+    mask = np.zeros((ph, pw), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, polygon, 255)
+    dimmed = (preview.astype(np.float32) * 0.10).astype(np.uint8)
+    canvas = dimmed.copy()
+    canvas[mask > 0] = preview[mask > 0]
+    cv2.polylines(canvas, [polygon], True, edge_color, 2)
+    return canvas
+
+
+def _draw_panel(canvas: np.ndarray, lines: List[str], origin: tuple[int, int] = (12, 12)) -> None:
+    if not lines:
+        return
+    x0, y0 = origin
+    line_h = 24
+    width = min(
+        canvas.shape[1] - 24,
+        max(260, max(cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)[0][0] for line in lines) + 24),
+    )
+    height = 16 + line_h * len(lines)
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (x0, y0), (x0 + width, y0 + height), (8, 14, 22), -1)
+    cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0, dst=canvas)
+    for idx, line in enumerate(lines):
+        color = (255, 255, 255) if idx == 0 else (188, 218, 245)
+        cv2.putText(
+            canvas,
+            line,
+            (x0 + 10, y0 + 26 + idx * line_h),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            color,
+            2,
+        )
+
+
+def _step_frame_index(current: int, delta: int, total: int) -> int:
+    return max(0, min(total - 1, current + delta))
+
+
+def _seed_status_line(seed: Optional[Dict], role: str) -> str:
+    if not isinstance(seed, dict):
+        return f"{role}: not set"
+    frame_idx = int(seed.get("frame_idx", 0) or 0) + 1
+    return f"{role}: set on frame {frame_idx}"
+
+
+def _collect_manual_seed_annotations(
+    video_path: str,
+    max_frames: int = 500,
+    ring_roi: Optional[Dict] = None,
+) -> Optional[Dict]:
     """
     Loads up to first 500 frames into an annotation canvas and lets user mark
     RED/BLUE/REF fingerprints with mouse ROI.
     """
-    frames = _load_annotation_buffer(video_path, max_frames=max_frames, preview_width=480)
+    frames = _load_annotation_buffer(video_path, max_frames=max_frames, preview_width=720)
     if not frames:
         return None
 
-    window = "VAR Box Fingerprint Canvas"
+    window = "VAR Box Boxer Identification"
     current = 0
     seeds: Dict[str, Optional[Dict]] = {"RED": None, "BLUE": None, "REF": None}
 
     try:
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window, 980, 680)
+        cv2.resizeWindow(window, 1180, 820)
         cv2.createTrackbar("Frame", window, 0, len(frames) - 1, lambda *_: None)
     except Exception:
         return None
@@ -208,26 +292,41 @@ def _collect_manual_seed_annotations(video_path: str, max_frames: int = 500) -> 
     while True:
         current = cv2.getTrackbarPos("Frame", window)
         data = frames[current]
-        canvas = data["preview"].copy()
-        ph, pw = canvas.shape[:2]
-
-        cv2.putText(
-            canvas,
-            "Loaded first 500 frames | n/p move | r=RED | b=BLUE | f=REF | Enter=confirm | Esc=cancel",
-            (10, 26),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.56,
-            (255, 255, 255),
-            2,
+        canvas = _focus_preview_to_ring(
+            data["preview"],
+            ring_roi.get("normalized_points") if isinstance(ring_roi, dict) else None,
+            edge_color=(42, 214, 255),
         )
-        cv2.putText(
+        ph, pw = canvas.shape[:2]
+        _draw_panel(
             canvas,
-            f"Frame {current + 1}/{len(frames)} (source idx {data['frame_idx']})",
-            (10, ph - 12),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (180, 220, 255),
-            2,
+            [
+                "Step 2/3  Boxer Identification",
+                "Move to a clean frame first, then draw tight boxes around the visible fighters.",
+                "R = mark RED boxer | B = mark BLUE boxer | F = mark referee (optional)",
+                "The dimmed area is outside the ring. Use an unobstructed frame before boxing each role.",
+            ],
+            origin=(12, 12),
+        )
+        _draw_panel(
+            canvas,
+            [
+                f"Frame {current + 1}/{len(frames)} | ts {data['timestamp_s']:.2f}s",
+                _seed_status_line(seeds["RED"], "RED"),
+                _seed_status_line(seeds["BLUE"], "BLUE"),
+                _seed_status_line(seeds["REF"], "REF"),
+            ],
+            origin=(12, max(72, ph - 124)),
+        )
+        _draw_panel(
+            canvas,
+            [
+                "Controls",
+                "Left/Right or P/N: move 1 frame",
+                "J/L: jump 10 frames",
+                "C: clear all boxes | Enter: continue | Esc: cancel",
+            ],
+            origin=(max(12, pw - 340), 12),
         )
 
         for role, col, y in (
@@ -250,16 +349,27 @@ def _collect_manual_seed_annotations(video_path: str, max_frames: int = 500) -> 
         if key == 27:  # esc
             cv2.destroyWindow(window)
             return None
-        if key in (ord("n"), 83):
-            current = min(len(frames) - 1, current + 1)
+        if key in (ord("n"), ord("N"), 83):
+            current = _step_frame_index(current, 1, len(frames))
             cv2.setTrackbarPos("Frame", window, current)
             continue
-        if key in (ord("p"), 81):
-            current = max(0, current - 1)
+        if key in (ord("p"), ord("P"), 81):
+            current = _step_frame_index(current, -1, len(frames))
             cv2.setTrackbarPos("Frame", window, current)
             continue
-        if key == ord("r"):
-            roi = cv2.selectROI(window, data["preview"], fromCenter=False, showCrosshair=True)
+        if key in (ord("l"), ord("L")):
+            current = _step_frame_index(current, 10, len(frames))
+            cv2.setTrackbarPos("Frame", window, current)
+            continue
+        if key in (ord("j"), ord("J")):
+            current = _step_frame_index(current, -10, len(frames))
+            cv2.setTrackbarPos("Frame", window, current)
+            continue
+        if key in (ord("c"), ord("C")):
+            seeds = {"RED": None, "BLUE": None, "REF": None}
+            continue
+        if key in (ord("r"), ord("R")):
+            roi = cv2.selectROI(window, canvas, fromCenter=False, showCrosshair=True)
             if roi and roi[2] > 0 and roi[3] > 0:
                 x, y, w, h = [int(v) for v in roi]
                 seeds["RED"] = {
@@ -269,8 +379,8 @@ def _collect_manual_seed_annotations(video_path: str, max_frames: int = 500) -> 
                     "rel_box": [x / pw, y / ph, (x + w) / pw, (y + h) / ph],
                 }
             continue
-        if key == ord("b"):
-            roi = cv2.selectROI(window, data["preview"], fromCenter=False, showCrosshair=True)
+        if key in (ord("b"), ord("B")):
+            roi = cv2.selectROI(window, canvas, fromCenter=False, showCrosshair=True)
             if roi and roi[2] > 0 and roi[3] > 0:
                 x, y, w, h = [int(v) for v in roi]
                 seeds["BLUE"] = {
@@ -280,8 +390,8 @@ def _collect_manual_seed_annotations(video_path: str, max_frames: int = 500) -> 
                     "rel_box": [x / pw, y / ph, (x + w) / pw, (y + h) / ph],
                 }
             continue
-        if key == ord("f"):
-            roi = cv2.selectROI(window, data["preview"], fromCenter=False, showCrosshair=True)
+        if key in (ord("f"), ord("F")):
+            roi = cv2.selectROI(window, canvas, fromCenter=False, showCrosshair=True)
             if roi and roi[2] > 0 and roi[3] > 0:
                 x, y, w, h = [int(v) for v in roi]
                 seeds["REF"] = {
@@ -379,11 +489,15 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
         return None
 
     window = "VAR Box Ring ROI"
-    state = {"points": []}
+    state = {"points": [], "mode": "draw", "candidate": None}
 
     def on_mouse(event, x, y, flags, param):
         del flags, param
-        if event == cv2.EVENT_LBUTTONDOWN and len(state["points"]) < 4:
+        if (
+            state["mode"] == "draw"
+            and event == cv2.EVENT_LBUTTONDOWN
+            and len(state["points"]) < 4
+        ):
             state["points"].append((int(x), int(y)))
 
     try:
@@ -398,49 +512,64 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
     last_frame = 0
     while True:
         current = cv2.getTrackbarPos("Frame", window)
-        if current != last_frame:
+        if current != last_frame and state["mode"] == "draw":
             state["points"] = []
             last_frame = current
         data = frames[current]
-        canvas = data["preview"].copy()
+        if state["mode"] == "confirm" and isinstance(state["candidate"], dict):
+            canvas = _focus_preview_to_ring(
+                data["preview"],
+                state["candidate"]["normalized_points"],
+                edge_color=(24, 190, 255),
+            )
+            _draw_panel(
+                canvas,
+                [
+                    "Step 1/3  Confirm Ring ROI",
+                    "Only the ring should remain bright. Everything else should look blacked out.",
+                    "Enter = accept ROI | c = redraw corners | n/p = inspect other frames | Esc = cancel",
+                ],
+                origin=(12, 12),
+            )
+        else:
+            canvas = data["preview"].copy()
+            _draw_panel(
+                canvas,
+                [
+                    "Step 1/3  Draw Ring ROI",
+                    "Click the 4 inner ring corners in order around the ropes.",
+                    "n/p = browse frames | c = clear points | Enter = preview confirmation | Esc = cancel",
+                ],
+                origin=(12, 12),
+            )
         ph, pw = canvas.shape[:2]
-
-        cv2.putText(
+        _draw_panel(
             canvas,
-            "Click 4 ring corners | n/p move | c clear | Enter confirm | Esc cancel",
-            (14, 28),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.60,
-            (255, 255, 255),
-            2,
-        )
-        cv2.putText(
-            canvas,
-            f"Frame {current + 1}/{len(frames)} | ts {data['timestamp_s']:.2f}s | points {len(state['points'])}/4",
-            (14, ph - 16),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (180, 220, 255),
-            2,
+            [
+                f"Frame {current + 1}/{len(frames)} | ts {data['timestamp_s']:.2f}s",
+                f"Points captured: {len(state['points'])}/4" if state["mode"] == "draw" else "ROI preview active",
+            ],
+            origin=(12, max(72, ph - 96)),
         )
 
         pts = state["points"]
-        for idx, pt in enumerate(pts):
-            cv2.circle(canvas, pt, 6, (24, 190, 255), -1)
-            cv2.putText(
-                canvas,
-                str(idx + 1),
-                (pt[0] + 8, pt[1] - 8),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (24, 190, 255),
-                2,
-            )
-        if len(pts) >= 2:
-            for idx in range(1, len(pts)):
-                cv2.line(canvas, pts[idx - 1], pts[idx], (24, 190, 255), 2)
-        if len(pts) == 4:
-            cv2.line(canvas, pts[-1], pts[0], (24, 190, 255), 2)
+        if state["mode"] == "draw":
+            for idx, pt in enumerate(pts):
+                cv2.circle(canvas, pt, 6, (24, 190, 255), -1)
+                cv2.putText(
+                    canvas,
+                    str(idx + 1),
+                    (pt[0] + 8, pt[1] - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (24, 190, 255),
+                    2,
+                )
+            if len(pts) >= 2:
+                for idx in range(1, len(pts)):
+                    cv2.line(canvas, pts[idx - 1], pts[idx], (24, 190, 255), 2)
+            if len(pts) == 4:
+                cv2.line(canvas, pts[-1], pts[0], (24, 190, 255), 2)
 
         cv2.imshow(window, canvas)
         key = cv2.waitKey(30) & 0xFF
@@ -450,6 +579,8 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
             return None
         if key in (ord("c"), ord("C")):
             state["points"] = []
+            state["mode"] = "draw"
+            state["candidate"] = None
             continue
         if key in (ord("n"), 83):
             current = min(len(frames) - 1, current + 1)
@@ -459,7 +590,7 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
             current = max(0, current - 1)
             cv2.setTrackbarPos("Frame", window, current)
             continue
-        if key in (13, 10, 32) and len(state["points"]) == 4:
+        if key in (13, 10, 32) and state["mode"] == "draw" and len(state["points"]) == 4:
             source_w = int(data["source_width"])
             source_h = int(data["source_height"])
             normalized_points = [
@@ -470,8 +601,7 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
                 [int(round(px * source_w)), int(round(py * source_h))]
                 for px, py in normalized_points
             ]
-            cv2.destroyWindow(window)
-            return {
+            state["candidate"] = {
                 "frame_idx": int(data["frame_idx"]),
                 "timestamp_s": round(float(data["timestamp_s"]), 3),
                 "source_width": source_w,
@@ -479,6 +609,13 @@ def _choose_ring_roi(video_path: str, max_frames: int = 1200) -> Optional[Dict]:
                 "normalized_points": normalized_points,
                 "source_points": source_points,
             }
+            state["mode"] = "confirm"
+            continue
+        if key in (13, 10, 32) and state["mode"] == "confirm" and isinstance(
+            state["candidate"], dict
+        ):
+            cv2.destroyWindow(window)
+            return state["candidate"]
 
     cv2.destroyWindow(window)
     return None
@@ -668,6 +805,7 @@ class MainWindow(QMainWindow):
         self.last_out_dir = os.path.abspath("output")
         self.audit_events: List[AuditEvent] = []
         self.last_analysis_payload: Dict = {}
+        self.last_system_check_text = "System Check: Not run"
         self.timeline_events: List[Dict] = []
         self.filtered_timeline_events: List[Dict] = []
         self.setWindowTitle(APP_TITLE)
@@ -852,6 +990,10 @@ class MainWindow(QMainWindow):
         self.lbl_ring_status.setWordWrap(True)
         self.lbl_ring_status.setObjectName("muted")
         left_v.addWidget(self.lbl_ring_status)
+        self.lbl_system_status = QLabel(self.last_system_check_text)
+        self.lbl_system_status.setWordWrap(True)
+        self.lbl_system_status.setObjectName("muted")
+        left_v.addWidget(self.lbl_system_status)
         self._refresh_ring_roi_status()
         grid.addWidget(left, 0, 0, 2, 1)
 
@@ -862,7 +1004,7 @@ class MainWindow(QMainWindow):
         rt.setSpacing(10)
         rt.addWidget(QLabel("Run"))
         btn_row = QHBoxLayout()
-        self.btn_run = QPushButton("Start Analysis")
+        self.btn_run = QPushButton("Start Guided Analysis")
         self.btn_run.clicked.connect(self._run)
         self.btn_abort = QPushButton("Reset")
         self.btn_abort.setObjectName("danger")
@@ -1063,6 +1205,11 @@ class MainWindow(QMainWindow):
     def _audit(self, action: str, details: str):
         evt = AuditEvent(timestamp_s=time.time(), actor="operator", action=action, details=details)
         self.audit_events.append(evt)
+
+    def _refresh_system_check_status(self, text: Optional[str] = None):
+        if text is not None:
+            self.last_system_check_text = text
+        self.lbl_system_status.setText(self.last_system_check_text)
 
     def _add_ref_event(self):
         event_type_ui = self.cb_ref_event.currentText().strip().lower()
@@ -1351,6 +1498,76 @@ class MainWindow(QMainWindow):
         self._log("Manual ring ROI cleared. Falling back to heuristic gating.")
         self._audit("ring_roi_cleared", "cleared")
 
+    def _guided_preflight_setup(self) -> bool:
+        if self.cfg.use_camera:
+            self.cfg.manual_seeds = None
+            self._refresh_system_check_status("System Check: Skipped for camera capture")
+            return True
+        if not self.cfg.input_path:
+            return False
+
+        self._log("Guided setup 1/3: draw the ring ROI.")
+        ring_roi = _choose_ring_roi(self.cfg.input_path, max_frames=1200)
+        if ring_roi is None:
+            self._log("Guided setup cancelled before analysis start.")
+            self._audit("guided_setup_cancelled", "ring_roi_cancelled")
+            return False
+        self.cfg.ring_roi = ring_roi
+        self._refresh_ring_roi_status()
+        self._log(
+            (
+                "Ring ROI confirmed at "
+                f"{float(ring_roi.get('timestamp_s', 0.0) or 0.0):.2f}s "
+                "with outside area dimmed for review."
+            )
+        )
+        self._audit(
+            "guided_ring_roi_confirmed",
+            (
+                f"frame_idx={int(ring_roi.get('frame_idx', 0) or 0)} "
+                f"timestamp_s={float(ring_roi.get('timestamp_s', 0.0) or 0.0):.3f}"
+            ),
+        )
+
+        self._log("Guided setup 2/3: identify the boxers with bounding boxes.")
+        seeds = _collect_manual_seed_annotations(
+            self.cfg.input_path,
+            max_frames=500,
+            ring_roi=self.cfg.ring_roi,
+        )
+        if not seeds:
+            self._log("Guided boxer identification cancelled before analysis start.")
+            self._audit("guided_setup_cancelled", "boxer_identification_cancelled")
+            return False
+        self.cfg.manual_seeds = seeds
+        ref_seeded = int(isinstance(seeds, dict) and "REF" in seeds)
+        self._log(
+            "Guided setup complete: RED/BLUE locked and referee seed "
+            + ("captured." if ref_seeded else "skipped.")
+        )
+        self._audit(
+            "guided_boxer_identification_confirmed",
+            f"roles={','.join(sorted(seeds.keys()))}",
+        )
+        self._log("Guided setup 3/3: running system check against the labeled fighters.")
+        result = run_guided_system_check(
+            self.cfg.input_path,
+            backend=self.cfg.backend,
+            ring_roi=self.cfg.ring_roi,
+            manual_seeds=self.cfg.manual_seeds,
+        )
+        report = format_guided_system_check(result)
+        for line in report.splitlines():
+            self._log(line)
+        self._refresh_system_check_status(result.summary)
+        if not result.passed:
+            self._audit("guided_system_check_failed", result.summary)
+            QMessageBox.critical(self, APP_TITLE, report)
+            return False
+        self._audit("guided_system_check_passed", result.summary)
+        QMessageBox.information(self, APP_TITLE, report)
+        return True
+
     def _select_calibration_profile(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1547,6 +1764,7 @@ class MainWindow(QMainWindow):
         self.cfg.input_path = path
         self.cfg.use_camera = False
         self.cfg.ring_roi = None
+        self.cfg.manual_seeds = None
         self.cb_cam_index.setEnabled(False)
         self.spn_secs.setEnabled(False)
         self.btn_align_round.setEnabled(True)
@@ -1554,6 +1772,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_ring.setEnabled(True)
         self.lbl_selected.setText(f"Selected Source: {human_path(path)}")
         self._refresh_ring_roi_status()
+        self._refresh_system_check_status("System Check: Not run")
         self._log(f"Video selected: {path}")
         self._audit("video_selected", path)
 
@@ -1578,11 +1797,14 @@ class MainWindow(QMainWindow):
         if on:
             self.cfg.input_path = None
             self.cfg.ring_roi = None
+            self.cfg.manual_seeds = None
             self.lbl_selected.setText("Selected Source: Camera")
             self._refresh_ring_roi_status()
+            self._refresh_system_check_status("System Check: Skipped for camera capture")
             self._log("Camera capture enabled.")
         else:
             self.lbl_selected.setText("Selected Source: -")
+            self._refresh_system_check_status("System Check: Not run")
             self._log("Camera capture disabled.")
 
     def _run(self):
@@ -1610,6 +1832,8 @@ class MainWindow(QMainWindow):
         self.cfg.warmup_seconds = float(self.spn_warmup_seconds.value())
         self.cfg.round_start_offset_seconds = float(self.spn_round_offset.value())
         self.cfg.manual_seeds = None
+        if not self._guided_preflight_setup():
+            return
         self._audit(
             "analysis_start_requested",
             (
@@ -1618,17 +1842,6 @@ class MainWindow(QMainWindow):
                 f"ref_events={len(self.cfg.ref_events)} corrections={len(self.cfg.manual_corrections)}"
             ),
         )
-
-        if not self.cfg.use_camera:
-            self._log("Loading first 500 frames for manual fingerprint annotation...")
-            seeds = _collect_manual_seed_annotations(self.cfg.input_path, max_frames=500)
-            if not seeds:
-                self._log(
-                    "Manual fingerprint annotation skipped. Continuing with automatic identity tracking."
-                )
-            else:
-                self.cfg.manual_seeds = seeds
-                self._log("Manual fingerprints captured for RED and BLUE.")
 
         source_base = (
             "camera_capture"
@@ -1754,6 +1967,7 @@ class MainWindow(QMainWindow):
         self._log("UI reset.")
         self.cfg.ref_events.clear()
         self.cfg.manual_corrections.clear()
+        self._refresh_system_check_status("System Check: Not run")
         self._refresh_correction_queue_view()
         self.last_analysis_payload = {}
         self.timeline_events = []

@@ -29,8 +29,12 @@ python -m pip install -e .[dev]
 ## Apple Silicon Runtime
 - Use Python 3.10 or newer.
 - Prefer `VARBOX_BACKEND=auto` on Apple Silicon. It resolves to YOLOv8 and uses `VARBOX_YOLO_DEVICE=mps` when PyTorch MPS is available.
+- Default person tracking is now `VARBOX_YOLO_TRACKER=botsort` with fixed-camera tracker presets under [`assets/trackers`](assets/trackers).
+- The legacy pose-registry/bootstrap fallback is no longer the intended tracking path; tracked person IDs should come from the Ultralytics tracker.
+- ReID embeddings can run locally with `VARBOX_REID_MODEL=mobilenet_v3_small` on MPS, or `VARBOX_REID_MODEL=handcrafted` as the lowest-dependency fallback.
 - The runtime now defaults to a larger YOLO inference size on Apple Silicon and disables MediaPipe segmentation unless explicitly re-enabled.
 - Print the detected accelerator profile with `python -m boxing_analytics.app.cli --print-runtime-profile`.
+- NVIDIA DeepStream is not an Apple Silicon deployment target; use it only on NVIDIA dGPU/Jetson production hosts.
 
 ## Quality Gates
 ```bash
@@ -59,6 +63,34 @@ pytest
 - `VARBOX_CALIBRATION_PROFILE`
 - `VARBOX_MANUAL_CORRECTIONS`
 - `VARBOX_METADATA_PATH`
+
+## Strike Assessment Comparison
+
+The pose/tracking backend and strike-assessment backend are configured separately. The default
+remains `local`; the Roboflow modes use the public `boxing-vxhil/1` Universe object detector.
+
+```bash
+export ROBOFLOW_API_KEY="..."
+VARBOX_STRIKE_BACKEND=local \
+  VARBOX_OUTPUT=output/local.mp4 \
+  VARBOX_METADATA_PATH=output/local.json python main.py --cli
+VARBOX_STRIKE_BACKEND=roboflow \
+  VARBOX_OUTPUT=output/roboflow.mp4 \
+  VARBOX_METADATA_PATH=output/roboflow.json python main.py --cli
+```
+
+- `VARBOX_STRIKE_BACKEND=local|roboflow|hybrid`
+- `VARBOX_ROBOFLOW_MODEL_ID=boxing-vxhil/1`
+- `VARBOX_ROBOFLOW_API_URL=https://serverless.roboflow.com` (also supports a self-hosted server)
+- `VARBOX_ROBOFLOW_CONFIDENCE=0.35`
+- `VARBOX_ROBOFLOW_SAMPLE_FPS=5` limits cloud requests; increase it for fast punches, with a
+  corresponding cost/latency increase.
+
+`roboflow` uses only model action detections for assessment. `hybrid` prefers associated Roboflow
+`punch`/`miss` detections and falls back to the local temporal classifier when the sampled frame has
+no usable model action. Run metadata records the selected backend, model, request count, failures,
+and sampling rate so outputs can be compared reproducibly. API keys are read only from the
+environment and are never written to analysis metadata.
 
 ## Identity Stability (Two-Hypothesis Viterbi Smoothing)
 - The tracker always evaluates both mappings: `H0` (current RED/BLUE) and `H1` (swapped).
@@ -97,6 +129,16 @@ pytest
 - `VARBOX_STITCH_W_APPEAR=0.6`
 - `VARBOX_STITCH_W_POSE=0.2`
 
+### Detector / Tracker / ReID Env Vars
+- `VARBOX_YOLO_TRACKER=botsort`
+- `VARBOX_YOLO_TRACKER_CONFIG=` optional custom tracker YAML path
+- `VARBOX_YOLO_TRACK_PERSIST=1`
+- `VARBOX_YOLO_TRACK_CONF=0.15`
+- `VARBOX_YOLO_TRACK_IOU=0.45`
+- `VARBOX_REID_MODEL=mobilenet_v3_small`
+- `VARBOX_REID_DEVICE=mps`
+- `VARBOX_REID_IMGSZ=160`
+
 ### Deprecated Identity Vars (still accepted)
 - `VARBOX_ID_SWITCH_MARGIN`
 - `VARBOX_ID_MIN_FRAMES_BEFORE_SWITCH`
@@ -113,4 +155,6 @@ pytest
 ## Known Limitations
 - Core production pipeline is still rooted in legacy modules at repository root.
 - Contact classification remains heuristic despite the structured multi-stage pipeline.
+- The comparison Roboflow model is a frame-level object detector, not a temporal contact model;
+  validate it against representative, human-labeled bouts before relying on its punch/miss labels.
 - Calibration and evaluation are decision-support controls; they do not certify official scoring accuracy without external validation.

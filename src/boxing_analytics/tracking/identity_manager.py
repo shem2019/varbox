@@ -10,11 +10,13 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
+from color_signature import compute_color_scores
 from boxing_analytics.tracking.identity_hmm import (
     IdentityHMMConfig,
     TrackObservation,
     TwoFighterIdentityHMM,
 )
+from boxing_analytics.tracking.reid import build_reid_embedder
 from boxing_analytics.tracking.tracklet_stitcher import (
     TrackletStitcherConfig,
     TwoFighterTrackletStitcher,
@@ -43,6 +45,7 @@ class DetectionState:
     center: tuple[float, float]
     diag: float
     area: float
+    color_scores: tuple[float, float, float]
     embedding: FloatArray
     pose_signature: FloatArray
     mean_visibility: float
@@ -86,6 +89,9 @@ class IdentityManager:
         stitch_w_motion: float = 1.0,
         stitch_w_appear: float = 0.6,
         stitch_w_pose: float = 0.2,
+        reid_model: str = "auto",
+        reid_device: str = "auto",
+        reid_imgsz: int = 160,
         # Deprecated knobs kept for compatibility.
         switch_margin: float | None = None,
         min_frames_before_switch: int | None = None,
@@ -96,6 +102,11 @@ class IdentityManager:
         self.max_missing_frames = max_missing_frames
         self.embedding_alpha = embedding_alpha
         self.min_assignment_score = min_assignment_score
+        self._embedder = build_reid_embedder(
+            model_name=reid_model,
+            device=reid_device,
+            image_size=reid_imgsz,
+        )
 
         # Deprecated compatibility mappings.
         if switch_margin is not None:
@@ -172,22 +183,8 @@ class IdentityManager:
             return frame[0:0, 0:0]
         return frame[y1:y2, x1:x2]
 
-    @staticmethod
-    def _compute_embedding(crop: FrameArray) -> FloatArray:
-        if crop.size == 0:
-            return np.zeros((32,), dtype=np.float32)
-        patch = cv2.resize(crop, (64, 64), interpolation=cv2.INTER_AREA)
-        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-        mag, ang = cv2.cartToPolar(gx, gy, angleInDegrees=True)
-        hist_ang = cv2.calcHist([ang.astype(np.float32)], [0], None, [16], [0, 360]).flatten()
-        hist_int = cv2.calcHist([gray], [0], None, [16], [0, 256]).flatten()
-        vec = np.concatenate([hist_ang, hist_int]).astype(np.float32)
-        norm = float(np.linalg.norm(vec))
-        if norm <= 1e-6:
-            return np.zeros((32,), dtype=np.float32)
-        return cast(FloatArray, vec / norm)
+    def _compute_embedding(self, crop: FrameArray) -> FloatArray:
+        return cast(FloatArray, self._embedder.embed(crop))
 
     @staticmethod
     def _center(box: tuple[int, int, int, int]) -> tuple[float, float]:
@@ -294,7 +291,9 @@ class IdentityManager:
             center = self._center(box)
             diag = self._diag(box)
             area = float(max(1, (box[2] - box[0]) * (box[3] - box[1])))
-            embedding = self._compute_embedding(self._crop(frame, box))
+            crop = self._crop(frame, box)
+            embedding = self._compute_embedding(crop)
+            color_scores = compute_color_scores(crop)
             keypoints_raw = payload.get("keypoints")
             keypoints = keypoints_raw if isinstance(keypoints_raw, dict) else {}
             pose_sig, mean_vis = self._pose_signature(keypoints)
@@ -306,6 +305,7 @@ class IdentityManager:
                     center=center,
                     diag=diag,
                     area=area,
+                    color_scores=color_scores,
                     embedding=embedding,
                     pose_signature=pose_sig,
                     mean_visibility=mean_vis,
@@ -367,6 +367,24 @@ class IdentityManager:
             motion_term = max(motion_term, math.exp(-((dist / max(40.0, 1.2 * det.diag)) ** 2)))
         return 0.52 * area_term + 0.28 * persistence + 0.20 * motion_term
 
+    @staticmethod
+    def _fighter_color_score(det: DetectionState) -> float:
+        red, blue, white = det.color_scores
+        boxer_color = max(red, blue)
+        return boxer_color - 0.85 * white
+
+    @classmethod
+    def _looks_ref_like(cls, det: DetectionState) -> bool:
+        red, blue, white = det.color_scores
+        boxer_color = max(red, blue)
+        return bool(white >= 0.16 and white > boxer_color + 0.05)
+
+    def _fighter_candidate_score(self, det: DetectionState) -> float:
+        return self._pair_score(det) + 2.4 * self._fighter_color_score(det) + 0.35 * det.det_conf
+
+    def _sort_candidate_pool(self, detections: list[DetectionState]) -> list[DetectionState]:
+        return sorted(detections, key=self._fighter_candidate_score, reverse=True)
+
     def _select_fighter_pair(
         self,
         detections: list[DetectionState],
@@ -380,12 +398,16 @@ class IdentityManager:
             if role_id is not None and role_id in det_by_id:
                 selected.append(det_by_id[role_id])
 
+        selected_ids = {det.track_id for det in selected}
         if len(selected) < 2:
-            remaining = [
-                det for det in detections if det.track_id not in {d.track_id for d in selected}
-            ]
-            remaining.sort(key=self._pair_score, reverse=True)
-            for det in remaining:
+            remaining = [det for det in detections if det.track_id not in selected_ids]
+            non_ref_remaining = [det for det in remaining if not self._looks_ref_like(det)]
+            pool = (
+                non_ref_remaining
+                if len(selected) + len(non_ref_remaining) >= min(2, len(detections))
+                else remaining
+            )
+            for det in self._sort_candidate_pool(pool):
                 selected.append(det)
                 if len(selected) == 2:
                     break
@@ -463,7 +485,8 @@ class IdentityManager:
                 pose_embed=det.pose_signature,
                 mean_visibility=det.mean_visibility,
             )
-            for det in detections
+            for det in self._select_fighter_pair(detections)
+            if det is not None
         ]
         obs_a, obs_b, stitch_debug = self._stitcher.update(ts, raw_observations)
 
@@ -624,6 +647,8 @@ class IdentityManager:
                 "last_delta": float(last_debug.get("delta", 0.0) or 0.0),
                 "last_occlusion_score": float(last_debug.get("occlusion_score", 0.0) or 0.0),
                 "status_uncertain": int(str(last_debug.get("status", "stable")) == "uncertain"),
+                "reid_backend": self._embedder.name,
+                "reid_device": self._embedder.device,
             },
         }
 

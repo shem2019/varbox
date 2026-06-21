@@ -18,11 +18,23 @@ def _distance(a: tuple[int, int] | None, b: tuple[int, int] | None) -> float:
     return math.hypot(float(a[0] - b[0]), float(a[1] - b[1]))
 
 
+def _point_to_box_distance(point: tuple[int, int] | None, box: tuple[int, int, int, int]) -> float:
+    if point is None:
+        return 9_999.0
+    x, y = point
+    x1, y1, x2, y2 = box
+    dx = max(float(x1 - x), 0.0, float(x - x2))
+    dy = max(float(y1 - y), 0.0, float(y - y2))
+    return math.hypot(dx, dy)
+
+
 def classify_contact(
     gloves: list[GloveState],
     guard: GuardState,
     head_target: tuple[int, int] | None,
     body_target: tuple[int, int] | None,
+    defender_box: tuple[int, int, int, int],
+    target_scale: float,
     overlap_ratio: float,
 ) -> ContactClassification:
     if not gloves:
@@ -42,21 +54,28 @@ def classify_contact(
     glove = max(gloves, key=glove_score)
     head_dist = _distance(glove.position, head_target)
     body_dist = _distance(glove.position, body_target)
+    box_dist = _point_to_box_distance(glove.position, defender_box)
     target_zone: TargetZone = "Head" if head_dist <= body_dist else "Body"
-    target_dist = min(head_dist, body_dist)
+    target_dist = min(head_dist, body_dist, box_dist)
 
     guard_cover = guard.head_guard if target_zone == "Head" else guard.body_guard
+    target_scale = max(36.0, float(target_scale))
+    hit_radius = max(42.0, 0.72 * target_scale)
+    glance_radius = max(hit_radius * 1.45, target_scale * 1.05)
+    inside_defender = box_dist <= 1.0
 
     features = {
         "speed": float(glove.speed),
         "extension": float(glove.extension),
         "target_dist": float(target_dist),
+        "box_dist": float(box_dist),
+        "target_scale": float(target_scale),
         "guard_cover": float(guard_cover),
         "clinch_score": float(guard.clinch_score),
         "overlap": float(overlap_ratio),
     }
 
-    if guard.clinch_score >= 0.78:
+    if guard.clinch_score >= 0.92 and target_dist > hit_radius * 0.55:
         return ContactClassification(
             label="clinch",
             hand=glove.hand,
@@ -67,9 +86,13 @@ def classify_contact(
             features=features,
         )
 
-    hit_radius = 42.0
-    if target_dist <= hit_radius and glove.speed >= 2.0 and guard_cover <= 0.35:
-        confidence = min(0.99, 0.45 + 0.15 * glove.speed + 0.22 * glove.extension)
+    if (
+        (target_dist <= hit_radius or (inside_defender and glove.speed >= 0.8))
+        and glove.speed >= 0.8
+        and (glove.extension >= 0.16 or inside_defender)
+        and guard_cover <= 0.48
+    ):
+        confidence = min(0.99, 0.40 + 0.12 * glove.speed + 0.24 * glove.extension)
         return ContactClassification(
             label="landed_clean",
             hand=glove.hand,
@@ -80,8 +103,13 @@ def classify_contact(
             features=features,
         )
 
-    if target_dist <= hit_radius * 1.35 and glove.speed >= 1.2 and guard_cover <= 0.60:
-        confidence = min(0.93, 0.35 + 0.12 * glove.speed + 0.18 * glove.extension)
+    if (
+        target_dist <= glance_radius
+        and glove.speed >= 0.45
+        and (glove.extension >= 0.08 or box_dist <= target_scale * 0.18)
+        and guard_cover <= 0.72
+    ):
+        confidence = min(0.93, 0.32 + 0.10 * glove.speed + 0.16 * glove.extension)
         return ContactClassification(
             label="landed_glancing",
             hand=glove.hand,
@@ -92,7 +120,7 @@ def classify_contact(
             features=features,
         )
 
-    if target_dist <= hit_radius * 1.20 and guard_cover > 0.45:
+    if target_dist <= hit_radius * 1.20 and guard_cover > 0.42:
         confidence = min(0.94, 0.32 + 0.35 * guard_cover)
         return ContactClassification(
             label="blocked_guarded",
