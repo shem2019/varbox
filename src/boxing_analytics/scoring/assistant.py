@@ -8,12 +8,24 @@ from dataclasses import dataclass
 from boxing_analytics.scoring.criteria import RoleCriteria
 
 
+def _flag(value: object, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(int(str(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True, slots=True)
 class ScoringGate:
     round_alignment_ready: bool
     classification_ready: bool
     evidence_clips_ready: bool
     ref_events_flag_ready: bool
+    temporal_model_ready: bool = True
 
     @property
     def can_propose_ten_point(self) -> bool:
@@ -22,6 +34,7 @@ class ScoringGate:
             and self.classification_ready
             and self.evidence_clips_ready
             and self.ref_events_flag_ready
+            and self.temporal_model_ready
         )
 
     def missing_reasons(self) -> list[str]:
@@ -34,6 +47,8 @@ class ScoringGate:
             missing.append("evidence_clips_missing")
         if not self.ref_events_flag_ready:
             missing.append("ref_flags_missing")
+        if not self.temporal_model_ready:
+            missing.append("temporal_model_not_validated")
         return missing
 
 
@@ -66,12 +81,55 @@ def evaluate_scoring_gate(
         )
 
     ref_events_flag_ready = bool(metadata.get("confirmed_ref_event_flags_present", 0))
+    strike_backend = str(metadata.get("strike_backend", "local")).strip().lower()
+    temporal_model_ready = True
+    if strike_backend in {"videomae", "hybrid_videomae"}:
+        temporal = metadata.get("videomae")
+        temporal_model_ready = isinstance(temporal, dict)
+        if isinstance(temporal, dict):
+            training = temporal.get("training_metadata", {})
+            temporal_model_ready = (
+                isinstance(training, dict)
+                and not _flag(training.get("smoke_trained"), default=True)
+                and bool(str(training.get("manifest_digest", "")).strip())
+                and bool(str(temporal.get("model_sha256", "")).strip())
+            )
+            label_mapping = {
+                str(value)
+                for value in (
+                    temporal.get("label_mapping", {}).values()
+                    if isinstance(temporal.get("label_mapping"), dict)
+                    else []
+                )
+            }
+            temporal_model_ready = temporal_model_ready and {
+                "landed_head",
+                "landed_body",
+                "blocked",
+                "missed",
+                "no_punch",
+            }.issubset(label_mapping)
+        uncertain = [
+            event
+            for event in classified_events
+            if _flag(event.get("abstained"))
+            or str(event.get("label", "")).strip().lower() == "uncertain"
+        ]
+        candidate_count = len(classified_events)
+        max_abstention_rate = float(
+            os.getenv("VARBOX_MAX_TEMPORAL_ABSTENTION_RATE", "0.35") or "0.35"
+        )
+        if candidate_count and len(uncertain) / candidate_count > max_abstention_rate:
+            temporal_model_ready = False
+        if _flag(metadata.get("cancelled")):
+            temporal_model_ready = False
 
     return ScoringGate(
         round_alignment_ready=round_alignment_ready,
         classification_ready=classification_ready,
         evidence_clips_ready=evidence_clips_ready,
         ref_events_flag_ready=ref_events_flag_ready,
+        temporal_model_ready=temporal_model_ready,
     )
 
 

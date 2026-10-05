@@ -12,6 +12,9 @@ venv/
 
 # Local outputs
 output/
+artifacts/
+models/
+training_cache/
 
 # IDE
 .idea/

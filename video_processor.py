@@ -39,6 +39,12 @@ from boxing_analytics.detection import (
     RoboflowFrameResult,
     evaluate_strike,
 )
+from boxing_analytics.detection.evidence_fusion import FusionConfig, fuse_temporal_and_pose
+from boxing_analytics.detection.temporal_classifier import (
+    PunchCandidate,
+    VideoMAETemporalStrikeClassifier,
+)
+from boxing_analytics.detection.temporal_clip import decode_temporal_interaction_clip
 from boxing_analytics.review import (
     apply_manual_corrections,
     export_evidence_clip,
@@ -49,7 +55,7 @@ from boxing_analytics.scoring import (
     evaluate_scoring_gate,
     propose_round_points,
 )
-from boxing_analytics.tracking import IdentityManager
+from boxing_analytics.tracking import IdentityManager, Sam2FighterIdentityTrack
 
 import config
 from mediapipe_compat import PoseLandmark
@@ -657,6 +663,10 @@ def _evaluate_and_record_strike(
     strike_backend: str,
     roboflow_assessor: RoboflowBoxingAssessor | None,
     roboflow_result: RoboflowFrameResult | None,
+    temporal_classifier: VideoMAETemporalStrikeClassifier | None,
+    temporal_candidate_dedup: EventDeduplicator,
+    fusion_config: FusionConfig,
+    identity_confidence: float,
 ) -> tuple[list[dict], list[dict]]:
     events: list[dict] = []
     impacts: list[dict] = []
@@ -664,6 +674,8 @@ def _evaluate_and_record_strike(
     attacker_k = attacker_data["keypoints"]
     defender_k = defender_data["keypoints"]
     result = None
+    temporal_assessment = None
+    fusion_result = None
     if roboflow_assessor is not None:
         result = roboflow_assessor.assess_pair(
             roboflow_result,
@@ -672,7 +684,12 @@ def _evaluate_and_record_strike(
             attacker_box=attacker_data["box"],
             defender_box=defender_data["box"],
         )
-    if result is None and strike_backend in {"local", "hybrid"}:
+    if result is None and strike_backend in {
+        "local",
+        "hybrid",
+        "videomae",
+        "hybrid_videomae",
+    }:
         result = evaluate_strike(
             attacker_keypoints=attacker_k,
             defender_keypoints=defender_k,
@@ -685,6 +702,247 @@ def _evaluate_and_record_strike(
 
     hand = result.hand if result.hand in ("L", "R") else "ANY"
     glove_pos = result.glove_position
+    if strike_backend in {"videomae", "hybrid_videomae"}:
+        speed = float(result.features.get("speed", 0.0))
+        extension = float(result.features.get("extension", 0.0))
+        if speed < 0.8 or extension < 0.10:
+            return events, impacts
+        if not temporal_candidate_dedup.allow_attempt(
+            attacker_role,
+            hand,
+            timestamp_s,
+            glove_pos,
+        ):
+            return events, impacts
+        keypoint_visibility_values = []
+        for value in attacker_k.values():
+            if isinstance(value, tuple | list) and len(value) >= 3:
+                keypoint_visibility_values.append(float(value[2]))
+        keypoint_visibility = (
+            sum(keypoint_visibility_values) / len(keypoint_visibility_values)
+            if keypoint_visibility_values
+            else 1.0
+        )
+        candidate = PunchCandidate(
+            candidate_id=f"{attacker_role}_{frame_idx:08d}",
+            timestamp_s=timestamp_s,
+            attacker_role=attacker_role,
+            defender_role=defender_role,
+            hand={"L": "LEFT", "R": "RIGHT"}.get(hand, "UNKNOWN"),
+            pose_confidence=float(result.confidence),
+            wrist_speed=speed,
+            wrist_acceleration=0.0,
+            arm_extension=extension,
+            glove_target_distance=float(result.features.get("target_dist", 9999.0)),
+            guard_coverage=float(result.features.get("guard_cover", 0.0)),
+            fighter_overlap=float(result.features.get("overlap", 0.0)),
+            clinch_score=float(result.features.get("clinch_score", 0.0)),
+            identity_confidence=float(identity_confidence),
+            keypoint_visibility=keypoint_visibility,
+        )
+        if temporal_classifier is None:
+            clip_seconds = float(
+                os.getenv("VARBOX_VIDEOMAE_CLIP_SECONDS", "0.6") or "0.6"
+            )
+            evidence_clip = export_evidence_clip(
+                input_video=input_video,
+                timestamp_s=timestamp_s,
+                out_dir=clip_dir,
+                tag=f"{candidate.candidate_id}_model_unavailable",
+                pre_s=clip_seconds * 0.5,
+                post_s=clip_seconds * 0.5,
+            )
+            impact_pt = result.impact_point or (
+                (defender_data["box"][0] + defender_data["box"][2]) // 2,
+                (defender_data["box"][1] + defender_data["box"][3]) // 2,
+            )
+            wrist_pt = result.glove_position or (
+                (attacker_data["box"][0] + attacker_data["box"][2]) // 2,
+                (attacker_data["box"][1] + attacker_data["box"][3]) // 2,
+            )
+            evidence_image = _save_punch_evidence(
+                frame=frame,
+                frame_idx=frame_idx,
+                attacker_role=attacker_role,
+                defender_role=defender_role,
+                attacker_box=attacker_data["box"],
+                defender_box=defender_data["box"],
+                wrist_pt=wrist_pt,
+                impact_pt=impact_pt,
+                target_zone="Unknown",
+                confidence=0.0,
+                out_dir=evidence_dir,
+            )
+            events.append(
+                {
+                    "event_id": candidate.candidate_id,
+                    "timestamp_s": round(timestamp_s, 3),
+                    "role": attacker_role,
+                    "opponent_role": defender_role,
+                    "label": "uncertain",
+                    "confidence": 0.0,
+                    "hand": hand,
+                    "target_zone": "Unknown",
+                    "round": current_round or 0,
+                    "abstained": 1,
+                    "abstention_reasons": ["temporal_model_unavailable"],
+                    "fusion_inputs": candidate.to_dict(),
+                    "evidence_clip": evidence_clip,
+                    "evidence_image": evidence_image,
+                }
+            )
+            return events, impacts
+        try:
+            clip_frames, clip_start, clip_end, crop_box = decode_temporal_interaction_clip(
+                video_path=input_video,
+                event_time_s=timestamp_s,
+                duration_s=float(os.getenv("VARBOX_VIDEOMAE_CLIP_SECONDS", "0.6") or "0.6"),
+                frame_count=temporal_classifier.frame_count,
+                image_size=temporal_classifier.image_size,
+                attacker_box=attacker_data["box"],
+                defender_box=defender_data["box"],
+                orientation_mode=str(
+                    getattr(config, "OUTPUT_ORIENTATION", "source") or "source"
+                ),
+                rotation_direction=str(
+                    getattr(config, "OUTPUT_ROTATION_DIRECTION", "clockwise")
+                    or "clockwise"
+                ),
+            )
+            temporal_assessment = temporal_classifier.classify(
+                clip_frames,
+                candidate,
+                [attacker_data["box"]] * len(clip_frames),
+                [defender_data["box"]] * len(clip_frames),
+                clip_start_time=clip_start,
+                clip_end_time=clip_end,
+            )
+            fusion_result = fuse_temporal_and_pose(
+                assessment=temporal_assessment,
+                candidate=candidate,
+                local=result,
+                config=fusion_config,
+                transformer_only=strike_backend == "videomae",
+            )
+        except (FileNotFoundError, RuntimeError, TypeError, ValueError) as exc:
+            clip_seconds = float(
+                os.getenv("VARBOX_VIDEOMAE_CLIP_SECONDS", "0.6") or "0.6"
+            )
+            evidence_clip = export_evidence_clip(
+                input_video=input_video,
+                timestamp_s=timestamp_s,
+                out_dir=clip_dir,
+                tag=f"{candidate.candidate_id}_inference_error",
+                pre_s=clip_seconds * 0.5,
+                post_s=clip_seconds * 0.5,
+            )
+            impact_pt = result.impact_point or (
+                (defender_data["box"][0] + defender_data["box"][2]) // 2,
+                (defender_data["box"][1] + defender_data["box"][3]) // 2,
+            )
+            wrist_pt = result.glove_position or (
+                (attacker_data["box"][0] + attacker_data["box"][2]) // 2,
+                (attacker_data["box"][1] + attacker_data["box"][3]) // 2,
+            )
+            evidence_image = _save_punch_evidence(
+                frame=frame,
+                frame_idx=frame_idx,
+                attacker_role=attacker_role,
+                defender_role=defender_role,
+                attacker_box=attacker_data["box"],
+                defender_box=defender_data["box"],
+                wrist_pt=wrist_pt,
+                impact_pt=impact_pt,
+                target_zone="Unknown",
+                confidence=0.0,
+                out_dir=evidence_dir,
+            )
+            events.append(
+                {
+                    "event_id": candidate.candidate_id,
+                    "timestamp_s": round(timestamp_s, 3),
+                    "role": attacker_role,
+                    "opponent_role": defender_role,
+                    "label": "uncertain",
+                    "confidence": 0.0,
+                    "hand": hand,
+                    "target_zone": "Unknown",
+                    "round": current_round or 0,
+                    "abstained": 1,
+                    "abstention_reasons": ["temporal_inference_error"],
+                    "temporal_error": str(exc),
+                    "fusion_inputs": candidate.to_dict(),
+                    "evidence_clip": evidence_clip,
+                    "evidence_image": evidence_image,
+                }
+            )
+            return events, impacts
+        if fusion_result.classification is None:
+            sampled_timestamps = [
+                round(float(value), 6)
+                for value in np.linspace(
+                    clip_start,
+                    clip_end,
+                    num=len(clip_frames),
+                    endpoint=True,
+                )
+            ]
+            evidence_clip = export_evidence_clip(
+                input_video=input_video,
+                timestamp_s=timestamp_s,
+                out_dir=clip_dir,
+                tag=f"{candidate.candidate_id}_uncertain",
+                pre_s=max(0.0, timestamp_s - clip_start),
+                post_s=max(0.0, clip_end - timestamp_s),
+            )
+            impact_pt = result.impact_point or (
+                (defender_data["box"][0] + defender_data["box"][2]) // 2,
+                (defender_data["box"][1] + defender_data["box"][3]) // 2,
+            )
+            wrist_pt = result.glove_position or (
+                (attacker_data["box"][0] + attacker_data["box"][2]) // 2,
+                (attacker_data["box"][1] + attacker_data["box"][3]) // 2,
+            )
+            evidence_image = _save_punch_evidence(
+                frame=frame,
+                frame_idx=frame_idx,
+                attacker_role=attacker_role,
+                defender_role=defender_role,
+                attacker_box=attacker_data["box"],
+                defender_box=defender_data["box"],
+                wrist_pt=wrist_pt,
+                impact_pt=impact_pt,
+                target_zone=temporal_assessment.target_zone,
+                confidence=float(fusion_result.confidence),
+                out_dir=evidence_dir,
+            )
+            events.append(
+                {
+                    "event_id": candidate.candidate_id,
+                    "timestamp_s": round(timestamp_s, 3),
+                    "role": attacker_role,
+                    "opponent_role": defender_role,
+                    "label": "uncertain",
+                    "confidence": round(float(fusion_result.confidence), 3),
+                    "hand": hand,
+                    "target_zone": temporal_assessment.target_zone,
+                    "round": current_round or 0,
+                    "abstained": 1,
+                    "abstention_reasons": list(fusion_result.reasons),
+                    "temporal_assessment": temporal_assessment.to_dict(),
+                    "fusion_inputs": candidate.to_dict(),
+                    "fusion_rules": fusion_result.rules,
+                    "interaction_crop": list(crop_box),
+                    "sampled_timestamps_s": sampled_timestamps,
+                    "evidence_clip": evidence_clip,
+                    "evidence_image": evidence_image,
+                }
+            )
+            return events, impacts
+        result = fusion_result.classification
+        hand = result.hand if result.hand in ("L", "R") else hand
+        glove_pos = result.glove_position
+
     if in_round and result.confidence >= ATTEMPT_CONFIDENCE:
         if attempt_dedup.allow_attempt(attacker_role, hand, timestamp_s, glove_pos):
             score_tracker.register_attempt(attacker_role)
@@ -700,6 +958,22 @@ def _evaluate_and_record_strike(
         "round": current_round or 0,
         "features": {k: round(float(v), 4) for k, v in result.features.items()},
     }
+    if temporal_assessment is not None and fusion_result is not None:
+        event_row["event_id"] = candidate.candidate_id
+        event_row["temporal_assessment"] = temporal_assessment.to_dict()
+        event_row["fusion_inputs"] = candidate.to_dict()
+        event_row["fusion_rules"] = fusion_result.rules
+        event_row["abstained"] = int(fusion_result.abstained)
+        event_row["interaction_crop"] = list(crop_box)
+        event_row["sampled_timestamps_s"] = [
+            round(float(value), 6)
+            for value in np.linspace(
+                temporal_assessment.clip_start_time,
+                temporal_assessment.clip_end_time,
+                num=temporal_classifier.frame_count if temporal_classifier is not None else 16,
+                endpoint=True,
+            )
+        ]
     events.append(event_row)
 
     if not in_round or result.label not in LANDED_LABELS:
@@ -745,6 +1019,16 @@ def _evaluate_and_record_strike(
         "feature_overlap": round(float(result.features.get("overlap", 0.0)), 3),
         "evidence_clip": clip_path,
     }
+    if temporal_assessment is not None and fusion_result is not None:
+        details["event_id"] = candidate.candidate_id
+        details["temporal_assessment"] = temporal_assessment.to_dict()
+        details["fusion_inputs"] = candidate.to_dict()
+        details["fusion_rules"] = fusion_result.rules
+        details["interaction_crop"] = list(crop_box)
+        details["sampled_timestamps_s"] = event_row["sampled_timestamps_s"]
+        details["temporal_model_name"] = temporal_assessment.model_name
+        details["temporal_model_version"] = temporal_assessment.model_version
+        details["temporal_inference_duration_ms"] = temporal_assessment.inference_duration_ms
     accepted = score_tracker.update(
         frame_idx=frame_idx,
         fighter_id=attacker_role,
@@ -796,12 +1080,23 @@ def process_video(
     strike_backend = os.getenv(
         "VARBOX_STRIKE_BACKEND", getattr(config, "STRIKE_BACKEND", "local")
     ).strip().lower()
-    if strike_backend not in {"local", "roboflow", "hybrid"}:
-        raise ValueError("VARBOX_STRIKE_BACKEND must be local, roboflow, or hybrid")
+    if strike_backend not in {
+        "local",
+        "roboflow",
+        "hybrid",
+        "videomae",
+        "hybrid_videomae",
+    }:
+        raise ValueError(
+            "VARBOX_STRIKE_BACKEND must be local, roboflow, hybrid, "
+            "videomae, or hybrid_videomae"
+        )
     fps_override = int(os.getenv("VARBOX_FPS_OVERRIDE", "0") or "0")
     red_name = os.getenv("VARBOX_RED_NAME", "Red Corner")
     blue_name = os.getenv("VARBOX_BLUE_NAME", "Blue Corner")
     unknown_corners_mode = bool(int(os.getenv("VARBOX_UNKNOWN_CORNERS", "0") or "0"))
+    manual_seed_payload = os.getenv("VARBOX_MANUAL_SEEDS", "").strip()
+    identity_backend = os.getenv("VARBOX_IDENTITY_BACKEND", "sam2").strip().lower()
     round_start_offset_s = float(
         os.getenv("VARBOX_ROUND_START_OFFSET_SECONDS", str(config.ROUND_START_OFFSET_SECONDS))
         or config.ROUND_START_OFFSET_SECONDS
@@ -861,6 +1156,46 @@ def process_video(
                 or "0.35"
             ),
             sample_every_frames=max(1, int(round(float(native_fps) / sample_fps))),
+        )
+    temporal_classifier = None
+    fusion_config = FusionConfig(
+        min_transformer_confidence=float(
+            os.getenv("VARBOX_VIDEOMAE_CONFIDENCE", "0.55") or "0.55"
+        ),
+        min_identity_confidence=float(
+            os.getenv("VARBOX_FUSION_MIN_IDENTITY_CONFIDENCE", "0.55") or "0.55"
+        ),
+        min_keypoint_visibility=float(
+            os.getenv("VARBOX_FUSION_MIN_KEYPOINT_VISIBILITY", "0.50") or "0.50"
+        ),
+        landed_min_extension=float(
+            os.getenv("VARBOX_FUSION_LANDED_MIN_EXTENSION", "0.10") or "0.10"
+        ),
+        landed_max_target_distance=float(
+            os.getenv("VARBOX_FUSION_LANDED_MAX_TARGET_DISTANCE", "170") or "170"
+        ),
+        blocked_min_guard=float(
+            os.getenv("VARBOX_FUSION_BLOCKED_MIN_GUARD", "0.35") or "0.35"
+        ),
+        max_overlap_for_landed=float(
+            os.getenv("VARBOX_FUSION_MAX_LANDED_OVERLAP", "0.75") or "0.75"
+        ),
+        missed_min_extension=float(
+            os.getenv("VARBOX_FUSION_MISSED_MIN_EXTENSION", "0.10") or "0.10"
+        ),
+        missed_min_target_distance=float(
+            os.getenv("VARBOX_FUSION_MISSED_MIN_TARGET_DISTANCE", "90") or "90"
+        ),
+    )
+    if strike_backend in {"videomae", "hybrid_videomae"}:
+        model_dir = os.getenv(
+            "VARBOX_VIDEOMAE_MODEL_DIR",
+            os.path.join(ROOT_DIR, "models", "varbox-videomae-development-current", "best"),
+        ).strip()
+        temporal_classifier = VideoMAETemporalStrikeClassifier(
+            model_dir=model_dir,
+            device=os.getenv("VARBOX_VIDEOMAE_DEVICE", "auto"),
+            confidence_threshold=fusion_config.min_transformer_confidence,
         )
     progress_interval_frames = max(1, int(max(1, native_fps) * 5))
     id_viterbi_window = int(os.getenv("VARBOX_ID_VITERBI_WINDOW", "25") or "25")
@@ -923,6 +1258,69 @@ def process_video(
     out = None
 
     pose_tracker = MultiPersonPoseTracker(bootstrap_frames=30, backend=backend)
+    sam_identity = None
+    if identity_backend == "sam2":
+        sam_identity = Sam2FighterIdentityTrack(
+            checkpoint_path=os.getenv(
+                "VARBOX_SAM2_CHECKPOINT",
+                os.path.join(ROOT_DIR, "models", "sam2.1", "sam2.1_hiera_tiny.pt"),
+            ),
+            model_config=os.getenv(
+                "VARBOX_SAM2_CONFIG",
+                "configs/sam2.1/sam2.1_hiera_t.yaml",
+            ),
+            device=os.getenv("VARBOX_SAM2_DEVICE", str(config.SAM2_DEVICE)),
+            stride=int(os.getenv("VARBOX_SAM2_STRIDE", str(config.SAM2_STRIDE)) or "10"),
+            chunk_samples=int(
+                os.getenv("VARBOX_SAM2_CHUNK_SAMPLES", str(config.SAM2_CHUNK_SAMPLES)) or "120"
+            ),
+            max_side=int(os.getenv("VARBOX_SAM2_MAX_SIDE", str(config.SAM2_MAX_SIDE)) or "768"),
+        )
+        source_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        orientation_mode = str(
+            getattr(config, "OUTPUT_ORIENTATION", "source") or "source"
+        ).lower()
+        orientation_rotates = (
+            orientation_mode == "portrait" and source_width > source_height
+        ) or (orientation_mode == "landscape" and source_height > source_width)
+        if orientation_rotates:
+            sam_identity.status = "unavailable"
+            sam_identity.error = (
+                "SAM identity uses source-frame coordinates; output rotation requires "
+                "the HMM/ReID fallback"
+            )
+            sam_ready = False
+        else:
+            sam_ready = sam_identity.precompute(
+                video_path=input_video,
+                manual_seeds_payload=manual_seed_payload,
+                cache_path=os.path.join(
+                    os.getenv(
+                        "VARBOX_SAM2_CACHE_DIR",
+                        os.path.join(ROOT_DIR, "training_cache", "sam2"),
+                    ),
+                    (
+                        f"{os.path.splitext(os.path.basename(input_video))[0]}_"
+                        f"{sha256(os.path.abspath(input_video).encode('utf-8')).hexdigest()[:16]}"
+                        ".json"
+                    ),
+                ),
+                progress_cb=(
+                    lambda message, percent: _emit_progress(
+                        progress_cb,
+                        message,
+                        None if percent is None else max(0, min(12, int(percent * 0.12))),
+                    )
+                ),
+                should_stop=should_stop,
+            )
+        if not sam_ready:
+            _emit_progress(
+                progress_cb,
+                f"SAM 2.1 identity unavailable; using HMM/ReID fallback: {sam_identity.error}",
+                None,
+            )
     identity = IdentityManager(
         max_missing_frames=max(45, int(1.5 * fps)),
         viterbi_window=id_viterbi_window,
@@ -971,7 +1369,22 @@ def process_video(
     score_tracker.metadata["unknown_corners_mode"] = int(unknown_corners_mode)
     score_tracker.metadata["backend"] = backend
     score_tracker.metadata["strike_backend"] = strike_backend
-    score_tracker.metadata["scoring_identity_source"] = "identity_manager_only"
+    score_tracker.metadata["candidate_proposer_version"] = "pose_evaluate_strike_v1"
+    score_tracker.metadata["temporal_clip_duration_s"] = float(
+        os.getenv("VARBOX_VIDEOMAE_CLIP_SECONDS", "0.6") or "0.6"
+    )
+    if temporal_classifier is not None:
+        score_tracker.metadata["videomae"] = temporal_classifier.diagnostics()
+        score_tracker.metadata["fusion_config"] = fusion_config.to_dict()
+    score_tracker.metadata["identity_backend_requested"] = identity_backend
+    score_tracker.metadata["sam2_identity"] = (
+        sam_identity.diagnostics() if sam_identity is not None else {"status": "disabled"}
+    )
+    score_tracker.metadata["scoring_identity_source"] = (
+        "sam2_video_masks_with_yolo_pose_matching"
+        if sam_identity is not None and sam_identity.status in {"ready", "cache_loaded"}
+        else "identity_manager_fallback"
+    )
     score_tracker.metadata["identity_tuning"] = {
         "viterbi_window": id_viterbi_window,
         "switch_penalty": id_switch_penalty,
@@ -1032,6 +1445,10 @@ def process_video(
     timeline.add_marker(
         TimelineMarker(timestamp_s=max(0.0, round_start_offset_s), label="round_start_manual")
     )
+    score_tracker.metadata["timeline_markers"] = [
+        {"timestamp_s": round(marker.timestamp_s, 3), "label": marker.label}
+        for marker in timeline.markers
+    ]
 
     confirmed_ref_events = _parse_confirmed_ref_events(
         payload=os.getenv("VARBOX_REF_EVENTS", "").strip(),
@@ -1057,7 +1474,6 @@ def process_video(
         for c in manual_corrections
     ]
 
-    manual_seed_payload = os.getenv("VARBOX_MANUAL_SEEDS", "").strip()
     if manual_seed_payload:
         try:
             seed_rows = json.loads(manual_seed_payload)
@@ -1080,6 +1496,9 @@ def process_video(
     )
     contact_dedup = EventDeduplicator(
         attempt_window_s=0.22, contact_window_s=0.32, min_travel_px=22.0
+    )
+    temporal_candidate_dedup = EventDeduplicator(
+        attempt_window_s=0.55, contact_window_s=0.60, min_travel_px=36.0
     )
     scored_rounds = set()
     current_round = None
@@ -1156,9 +1575,27 @@ def process_video(
         tracker_lock_status = pose_tracker.lock_status()
         frame_role_map: dict[int, str] = {}
 
-        red_id = identity.live_id_for_role("RED")
-        blue_id = identity.live_id_for_role("BLUE")
+        sam_role_ids = (
+            sam_identity.role_ids_for_poses(frame_idx - 1, poses)
+            if sam_identity is not None and sam_identity.status in {"ready", "cache_loaded"}
+            else {"RED": None, "BLUE": None}
+        )
+        red_id = sam_role_ids.get("RED") or identity.live_id_for_role("RED")
+        blue_id = sam_role_ids.get("BLUE") or identity.live_id_for_role("BLUE")
         ref_id = pose_tracker.live_role_status().get("REF")
+        role_identity_confidence = identity.role_confidence()
+        if sam_role_ids.get("RED") is not None:
+            role_identity_confidence["RED"] = (
+                sam_identity.match_confidence_for_role("RED")
+                if sam_identity is not None
+                else 0.0
+            )
+        if sam_role_ids.get("BLUE") is not None:
+            role_identity_confidence["BLUE"] = (
+                sam_identity.match_confidence_for_role("BLUE")
+                if sam_identity is not None
+                else 0.0
+            )
 
         if red_id is not None and red_id in poses:
             frame_role_map[red_id] = "RED"
@@ -1223,6 +1660,10 @@ def process_video(
                 strike_backend=strike_backend,
                 roboflow_assessor=roboflow_assessor,
                 roboflow_result=roboflow_result,
+                temporal_classifier=temporal_classifier,
+                temporal_candidate_dedup=temporal_candidate_dedup,
+                fusion_config=fusion_config,
+                identity_confidence=role_identity_confidence.get("RED", 0.0),
             )
             classified_events.extend(red_events)
             impacts.extend(red_impacts)
@@ -1250,6 +1691,10 @@ def process_video(
                 strike_backend=strike_backend,
                 roboflow_assessor=roboflow_assessor,
                 roboflow_result=roboflow_result,
+                temporal_classifier=temporal_classifier,
+                temporal_candidate_dedup=temporal_candidate_dedup,
+                fusion_config=fusion_config,
+                identity_confidence=role_identity_confidence.get("BLUE", 0.0),
             )
             classified_events.extend(blue_events)
             impacts.extend(blue_impacts)
@@ -1436,6 +1881,7 @@ def process_video(
         "classification_ready": int(scoring_gate.classification_ready),
         "evidence_clips_ready": int(scoring_gate.evidence_clips_ready),
         "ref_events_flag_ready": int(scoring_gate.ref_events_flag_ready),
+        "temporal_model_ready": int(scoring_gate.temporal_model_ready),
         "can_propose_ten_point": int(scoring_gate.can_propose_ten_point),
         "missing_reasons": scoring_gate.missing_reasons(),
     }

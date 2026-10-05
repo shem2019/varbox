@@ -67,6 +67,34 @@ ROBOFLOW_MODEL_ID = os.getenv("VARBOX_ROBOFLOW_MODEL_ID", "boxing-vxhil/1").stri
 ROBOFLOW_CONFIDENCE = float(os.getenv("VARBOX_ROBOFLOW_CONFIDENCE", "0.35") or "0.35")
 ROBOFLOW_SAMPLE_FPS = float(os.getenv("VARBOX_ROBOFLOW_SAMPLE_FPS", "5") or "5")
 
+# Offline temporal strike classification and SAM 2.1 identity support.
+OLYMPIC_DATASET_DIR = os.getenv("VARBOX_OLYMPIC_DATASET_DIR", "").strip()
+VIDEOMAE_MODEL_DIR = os.getenv(
+    "VARBOX_VIDEOMAE_MODEL_DIR",
+    os.path.join(_ROOT, "models", "varbox-videomae-development-current", "best"),
+)
+VIDEOMAE_DEVICE = os.getenv("VARBOX_VIDEOMAE_DEVICE", "mps" if RUNTIME_PROFILE.has_mps else "cpu")
+VIDEOMAE_CONFIDENCE = float(os.getenv("VARBOX_VIDEOMAE_CONFIDENCE", "0.55") or "0.55")
+VIDEOMAE_CLIP_SECONDS = float(os.getenv("VARBOX_VIDEOMAE_CLIP_SECONDS", "0.6") or "0.6")
+VIDEOMAE_CLIP_CACHE_DIR = os.getenv(
+    "VARBOX_VIDEOMAE_CLIP_CACHE_DIR",
+    os.path.join(_ROOT, "training_cache", "videomae_clips"),
+)
+IDENTITY_BACKEND = os.getenv("VARBOX_IDENTITY_BACKEND", "sam2").strip().lower()
+SAM2_CHECKPOINT = os.getenv(
+    "VARBOX_SAM2_CHECKPOINT",
+    os.path.join(_ROOT, "models", "sam2.1", "sam2.1_hiera_tiny.pt"),
+)
+SAM2_CONFIG = os.getenv(
+    "VARBOX_SAM2_CONFIG",
+    "configs/sam2.1/sam2.1_hiera_t.yaml",
+)
+SAM2_DEVICE = os.getenv("VARBOX_SAM2_DEVICE", "mps" if RUNTIME_PROFILE.has_mps else "cpu")
+SAM2_STRIDE = int(os.getenv("VARBOX_SAM2_STRIDE", "10") or "10")
+SAM2_CHUNK_SAMPLES = int(os.getenv("VARBOX_SAM2_CHUNK_SAMPLES", "120") or "120")
+SAM2_MAX_SIDE = int(os.getenv("VARBOX_SAM2_MAX_SIDE", "768") or "768")
+SAM2_ISOLATE_MPS = int(os.getenv("VARBOX_SAM2_ISOLATE_MPS", "1") or "1")
+
 # Output orientation control.
 # "portrait": rotate landscape frames to portrait.
 # "landscape": rotate portrait frames to landscape.

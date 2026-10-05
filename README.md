@@ -80,6 +80,13 @@ VARBOX_STRIKE_BACKEND=roboflow \
 ```
 
 - `VARBOX_STRIKE_BACKEND=local|roboflow|hybrid`
+- Offline temporal modes are also available:
+  `VARBOX_STRIKE_BACKEND=videomae|hybrid_videomae`.
+- Set `VARBOX_VIDEOMAE_MODEL_DIR` to a complete local exported model directory.
+- Set `VARBOX_IDENTITY_BACKEND=sam2` to enable sampled SAM 2.1 mask continuity with
+  YOLO pose matching and HMM/ReID fallback.
+- See [`docs/videomae_strike_classifier.md`](docs/videomae_strike_classifier.md) for
+  dataset audit, MPS training, evaluation, offline setup, and SAM performance controls.
 - `VARBOX_ROBOFLOW_MODEL_ID=boxing-vxhil/1`
 - `VARBOX_ROBOFLOW_API_URL=https://serverless.roboflow.com` (also supports a self-hosted server)
 - `VARBOX_ROBOFLOW_CONFIDENCE=0.35`

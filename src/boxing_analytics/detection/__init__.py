@@ -9,6 +9,7 @@ from boxing_analytics.detection.models import (
 )
 from boxing_analytics.detection.pipeline import evaluate_strike
 from boxing_analytics.detection.roboflow import RoboflowBoxingAssessor, RoboflowFrameResult
+from boxing_analytics.detection.temporal_buffer import TemporalClipBuffer, TemporalFrameSample
 
 __all__ = [
     "ContactClassification",
@@ -18,5 +19,7 @@ __all__ = [
     "GuardState",
     "RoboflowBoxingAssessor",
     "RoboflowFrameResult",
+    "TemporalClipBuffer",
+    "TemporalFrameSample",
     "evaluate_strike",
 ]

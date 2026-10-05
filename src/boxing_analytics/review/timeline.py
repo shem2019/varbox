@@ -24,6 +24,7 @@ def build_timeline_events(
 ) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for row in classified_events:
+        temporal = row.get("temporal_assessment")
         events.append(
             {
                 "timestamp_s": round(_as_float(row.get("timestamp_s", 0.0)), 3),
@@ -35,6 +36,10 @@ def build_timeline_events(
                 "source": "model_strike",
                 "invalidated": _as_int(row.get("invalidated_by_review", 0)),
                 "corrected": _as_int(row.get("corrected_by_review", 0)),
+                "abstained": _as_int(row.get("abstained", 0)),
+                "temporal_probabilities": (
+                    temporal.get("class_probabilities", {}) if isinstance(temporal, dict) else {}
+                ),
             }
         )
 
@@ -70,10 +75,12 @@ def filter_timeline_events(
     zone_filter: str = "ALL",
     round_filter: int = 0,
     include_invalidated: bool = False,
+    abstained_filter: str = "ALL",
 ) -> list[dict[str, object]]:
     role_want = role_filter.strip().upper()
     label_want = label_filter.strip().lower()
     zone_want = zone_filter.strip().lower()
+    abstained_want = abstained_filter.strip().upper()
 
     out: list[dict[str, object]] = []
     for row in events:
@@ -86,6 +93,10 @@ def filter_timeline_events(
         if label_want != "all" and str(row.get("label", "")).lower() != label_want:
             continue
         if zone_want != "all" and str(row.get("target_zone", "")).lower() != zone_want:
+            continue
+        if abstained_want == "ABSTAINED" and not _as_int(row.get("abstained", 0)):
+            continue
+        if abstained_want == "ACCEPTED" and _as_int(row.get("abstained", 0)):
             continue
         out.append(dict(row))
     return out
@@ -103,5 +114,10 @@ def format_timeline_rows(events: list[dict[str, object]]) -> list[str]:
             f"zone={str(row.get('target_zone', '-'))} "
             f"conf={_as_float(row.get('confidence', 0.0)):.2f} "
             f"src={str(row.get('source', '-'))}"
+            + (
+                f" probs={row.get('temporal_probabilities')}"
+                if row.get("temporal_probabilities")
+                else ""
+            )
         )
     return lines

@@ -127,6 +127,80 @@ def _round_alignment_error(dataset: EvalDataset) -> float:
     return round(sum(errors) / float(len(errors)), 4)
 
 
+def _temporal_metrics(dataset: EvalDataset, samples: list[EventSample]) -> dict[str, Any]:
+    accepted = [sample for sample in samples if not sample.abstained]
+    accepted_correct = sum(
+        sample.ground_truth_label == sample.predicted_label for sample in accepted
+    )
+    recalls: list[float] = []
+    confusion = [[0 for _ in CONTACT_LABELS] for _ in CONTACT_LABELS]
+    label_index = {label: index for index, label in enumerate(CONTACT_LABELS)}
+    for sample in samples:
+        confusion[label_index[sample.ground_truth_label]][label_index[sample.predicted_label]] += 1
+    for index in range(len(CONTACT_LABELS)):
+        support = sum(confusion[index])
+        recalls.append(_safe_div(float(confusion[index][index]), float(support)))
+    timing_errors = [
+        abs(sample.timestamp_s - sample.ground_truth_timestamp_s)
+        for sample in samples
+        if sample.ground_truth_timestamp_s is not None
+    ]
+    event_ids = [sample.event_id for sample in samples if sample.event_id]
+    duplicate_count = len(event_ids) - len(set(event_ids))
+    ground_truth_count = sum(video.ground_truth_event_count for video in dataset.videos)
+    proposed_count = sum(video.proposed_candidate_count for video in dataset.videos)
+    matched_count = len(samples)
+    per_bout = {
+        video.video_id: {
+            "sample_count": len(video.samples),
+            "macro_contact_f1": _contact_metrics(video.samples)["macro"]["f1"],
+            "abstention_rate": round(
+                _safe_div(
+                    float(sum(sample.abstained for sample in video.samples)),
+                    float(len(video.samples)),
+                ),
+                4,
+            ),
+        }
+        for video in dataset.videos
+    }
+    return {
+        "punch_candidate_recall": round(
+            min(1.0, _safe_div(float(matched_count), float(ground_truth_count))),
+            4,
+        ),
+        "punch_candidate_precision": round(
+            min(1.0, _safe_div(float(matched_count), float(proposed_count))),
+            4,
+        ),
+        "abstention_rate": round(
+            _safe_div(float(sum(sample.abstained for sample in samples)), float(len(samples))),
+            4,
+        ),
+        "accuracy_non_abstained": round(
+            _safe_div(float(accepted_correct), float(len(accepted))),
+            4,
+        ),
+        "balanced_accuracy": round(sum(recalls) / max(1, len(recalls)), 4),
+        "confusion_matrix": confusion,
+        "identity_uncertain_event_rate": round(
+            _safe_div(
+                float(sum(sample.identity_confidence < 0.55 for sample in samples)),
+                float(len(samples)),
+            ),
+            4,
+        ),
+        "end_to_end_event_timing_error_s": (
+            round(sum(timing_errors) / len(timing_errors), 4) if timing_errors else None
+        ),
+        "duplicate_event_rate": round(
+            _safe_div(float(duplicate_count), float(len(event_ids))),
+            4,
+        ),
+        "per_bout": per_bout,
+    }
+
+
 def _clip_integrity(
     *,
     samples: list[EventSample],
@@ -176,6 +250,7 @@ def run_evaluation(
             dataset_dir=dataset_dir,
             evidence_required_labels=evidence_required_labels,
         ),
+        "temporal_pipeline_metrics": _temporal_metrics(dataset, samples),
     }
 
     # compact single score for regression thresholds

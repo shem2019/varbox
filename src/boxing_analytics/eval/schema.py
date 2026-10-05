@@ -93,6 +93,10 @@ class EventSample:
     ground_truth_track_id: str
     predicted_track_id: str
     evidence_clip: str
+    event_id: str = ""
+    abstained: bool = False
+    identity_confidence: float = 1.0
+    ground_truth_timestamp_s: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> EventSample:
@@ -134,6 +138,17 @@ class EventSample:
             ground_truth_track_id=gt_track,
             predicted_track_id=pred_track,
             evidence_clip=str(payload.get("evidence_clip", "")).strip(),
+            event_id=str(payload.get("event_id", "")).strip(),
+            abstained=bool(int(payload.get("abstained", 0) or 0)),
+            identity_confidence=max(
+                0.0,
+                min(1.0, float(payload.get("identity_confidence", 1.0) or 0.0)),
+            ),
+            ground_truth_timestamp_s=(
+                None
+                if payload.get("ground_truth_timestamp_s") is None
+                else float(payload["ground_truth_timestamp_s"])
+            ),
         )
 
 
@@ -144,6 +159,8 @@ class VideoEvalRecord:
     round_markers_gt: list[RoundMarker]
     round_markers_pred: list[RoundMarker]
     ref_events: list[RefereeEvent]
+    ground_truth_event_count: int = 0
+    proposed_candidate_count: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> VideoEvalRecord:
@@ -174,6 +191,14 @@ class VideoEvalRecord:
             round_markers_gt=sorted(round_markers_gt, key=lambda row: row.round_no),
             round_markers_pred=sorted(round_markers_pred, key=lambda row: row.round_no),
             ref_events=sorted(ref_events, key=lambda row: row.timestamp_s),
+            ground_truth_event_count=_parse_int(
+                payload.get("ground_truth_event_count", len(samples)),
+                field_name="ground_truth_event_count",
+            ),
+            proposed_candidate_count=_parse_int(
+                payload.get("proposed_candidate_count", len(samples)),
+                field_name="proposed_candidate_count",
+            ),
         )
 
 

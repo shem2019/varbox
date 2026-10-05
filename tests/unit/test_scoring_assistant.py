@@ -85,3 +85,37 @@ def test_propose_round_points_applies_kd_and_deductions() -> None:
     )
     red_pts, blue_pts, _ = props[1]
     assert red_pts >= blue_pts
+
+
+def test_scoring_gate_blocks_smoke_trained_temporal_model(tmp_path: Path) -> None:
+    clip_path = tmp_path / "ev.mp4"
+    clip_path.write_bytes(b"fake")
+    metadata = {
+        "round_segments": [{"round": 1, "start_s": 0.0, "end_s": 180.0}],
+        "timeline_markers": [{"label": "round_start_manual", "timestamp_s": 0.0}],
+        "confirmed_ref_event_flags_present": 1,
+        "strike_backend": "hybrid_videomae",
+        "videomae": {
+            "model_sha256": "abc",
+            "label_mapping": {
+                0: "landed_head",
+                1: "landed_body",
+                2: "blocked",
+                3: "missed",
+                4: "no_punch",
+            },
+            "training_metadata": {
+                "smoke_trained": 1,
+                "manifest_digest": "manifest",
+            },
+        },
+    }
+    events = [{"label": "landed_clean"}, {"label": "blocked_guarded"}]
+    punches = [{"classification_label": "landed_clean", "evidence_clip": str(clip_path)}]
+    gate = evaluate_scoring_gate(
+        metadata=metadata,
+        classified_events=events,
+        punch_log=punches,
+    )
+    assert not gate.can_propose_ten_point
+    assert "temporal_model_not_validated" in gate.missing_reasons()

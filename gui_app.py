@@ -54,6 +54,7 @@ from boxing_analytics.app.system_check import (
     format_guided_system_check,
     run_guided_system_check,
 )
+import config
 from opencv_guard import install_opencv_circle_guard
 from score_tracker import ScoreTracker
 from scorecard_generator import generate_scorecard
@@ -138,6 +139,12 @@ def human_path(p):
 @dataclass
 class RunConfig:
     backend: str = "auto"
+    strike_backend: str = "hybrid_videomae"
+    identity_backend: str = "sam2"
+    videomae_model_dir: str = os.path.join(
+        ROOT_DIR, "models", "varbox-videomae-development-current", "best"
+    )
+    videomae_confidence: float = 0.55
     input_path: Optional[str] = None
     use_camera: bool = False
     camera_index: int = 0
@@ -669,6 +676,12 @@ class PipelineWorker(QThread):
             os.environ["VARBOX_METADATA_PATH"] = out_meta
             os.environ["VARBOX_EVIDENCE_DIR"] = evidence_dir
             os.environ["VARBOX_BACKEND"] = self.cfg.backend
+            os.environ["VARBOX_STRIKE_BACKEND"] = self.cfg.strike_backend
+            os.environ["VARBOX_IDENTITY_BACKEND"] = self.cfg.identity_backend
+            os.environ["VARBOX_VIDEOMAE_MODEL_DIR"] = self.cfg.videomae_model_dir
+            os.environ["VARBOX_VIDEOMAE_CONFIDENCE"] = str(self.cfg.videomae_confidence)
+            os.environ["VARBOX_VIDEOMAE_DEVICE"] = "mps"
+            os.environ["VARBOX_SAM2_DEVICE"] = "mps"
             os.environ["VARBOX_RED_NAME"] = self.cfg.red_name
             os.environ["VARBOX_BLUE_NAME"] = self.cfg.blue_name
             os.environ["VARBOX_OUT_DIR"] = out_dir
@@ -700,7 +713,13 @@ class PipelineWorker(QThread):
             elif "VARBOX_RING_ROI" in os.environ:
                 del os.environ["VARBOX_RING_ROI"]
 
-            self.progress.emit("Running object recognition + pose analysis...")
+            if self.cfg.identity_backend == "sam2":
+                self.progress.emit(
+                    "Running SAM fighter-identity pre-analysis; "
+                    "pose and strike analysis will follow..."
+                )
+            else:
+                self.progress.emit("Running object recognition + pose analysis...")
             tracker = ScoreTracker()
             tracker.metadata = {
                 "title": "VAR Box Professional Match Analysis",
@@ -903,6 +922,21 @@ class MainWindow(QMainWindow):
             ["Auto (Recommended)", "Lite (OpenCV-DNN)", "Pro (YOLOv8)"]
         )
         self.cb_backend.setCurrentIndex(0)
+        self.cb_strike_backend = QComboBox()
+        self.cb_strike_backend.addItems(
+            ["Local", "Roboflow", "Hybrid Roboflow", "VideoMAE", "Hybrid VideoMAE"]
+        )
+        self.cb_strike_backend.setCurrentIndex(4)
+        self.cb_identity_backend = QComboBox()
+        self.cb_identity_backend.addItems(["SAM 2.1 + YOLO", "HMM/ReID fallback"])
+        self.ed_videomae_model = QLineEdit(
+            os.path.join(ROOT_DIR, "models", "varbox-videomae-development-current", "best")
+        )
+        self.spn_videomae_confidence = QDoubleSpinBox()
+        self.spn_videomae_confidence.setRange(0.05, 0.99)
+        self.spn_videomae_confidence.setSingleStep(0.05)
+        self.spn_videomae_confidence.setDecimals(2)
+        self.spn_videomae_confidence.setValue(0.55)
         self.cb_cam_index = QComboBox()
         self.cb_cam_index.addItems([str(i) for i in range(0, 6)])
         self.cb_cam_index.setEnabled(False)
@@ -952,24 +986,32 @@ class MainWindow(QMainWindow):
         form.addWidget(self.cb_corner_mode, 2, 1)
         form.addWidget(QLabel("Detection Backend"), 3, 0)
         form.addWidget(self.cb_backend, 3, 1)
-        form.addWidget(QLabel("Camera Index"), 4, 0)
-        form.addWidget(self.cb_cam_index, 4, 1)
-        form.addWidget(QLabel("Record Duration (sec)"), 5, 0)
-        form.addWidget(self.spn_secs, 5, 1)
-        form.addWidget(QLabel("FPS Override (0=auto)"), 6, 0)
-        form.addWidget(self.spn_fps, 6, 1)
-        form.addWidget(QLabel("Bout Preset"), 7, 0)
-        form.addWidget(self.cb_bout_preset, 7, 1)
-        form.addWidget(QLabel("Rounds"), 8, 0)
-        form.addWidget(self.spn_rounds, 8, 1)
-        form.addWidget(QLabel("Round Seconds"), 9, 0)
-        form.addWidget(self.spn_round_seconds, 9, 1)
-        form.addWidget(QLabel("Rest Seconds"), 10, 0)
-        form.addWidget(self.spn_rest_seconds, 10, 1)
-        form.addWidget(QLabel("Warmup Seconds"), 11, 0)
-        form.addWidget(self.spn_warmup_seconds, 11, 1)
-        form.addWidget(QLabel("Round Start Offset (sec)"), 12, 0)
-        form.addWidget(self.spn_round_offset, 12, 1)
+        form.addWidget(QLabel("Strike Backend"), 4, 0)
+        form.addWidget(self.cb_strike_backend, 4, 1)
+        form.addWidget(QLabel("Identity Backend"), 5, 0)
+        form.addWidget(self.cb_identity_backend, 5, 1)
+        form.addWidget(QLabel("VideoMAE Model"), 6, 0)
+        form.addWidget(self.ed_videomae_model, 6, 1)
+        form.addWidget(QLabel("VideoMAE Confidence"), 7, 0)
+        form.addWidget(self.spn_videomae_confidence, 7, 1)
+        form.addWidget(QLabel("Camera Index"), 8, 0)
+        form.addWidget(self.cb_cam_index, 8, 1)
+        form.addWidget(QLabel("Record Duration (sec)"), 9, 0)
+        form.addWidget(self.spn_secs, 9, 1)
+        form.addWidget(QLabel("FPS Override (0=auto)"), 10, 0)
+        form.addWidget(self.spn_fps, 10, 1)
+        form.addWidget(QLabel("Bout Preset"), 11, 0)
+        form.addWidget(self.cb_bout_preset, 11, 1)
+        form.addWidget(QLabel("Rounds"), 12, 0)
+        form.addWidget(self.spn_rounds, 12, 1)
+        form.addWidget(QLabel("Round Seconds"), 13, 0)
+        form.addWidget(self.spn_round_seconds, 13, 1)
+        form.addWidget(QLabel("Rest Seconds"), 14, 0)
+        form.addWidget(self.spn_rest_seconds, 14, 1)
+        form.addWidget(QLabel("Warmup Seconds"), 15, 0)
+        form.addWidget(self.spn_warmup_seconds, 15, 1)
+        form.addWidget(QLabel("Round Start Offset (sec)"), 16, 0)
+        form.addWidget(self.spn_round_offset, 16, 1)
         left_v.addLayout(form)
 
         self.lbl_selected = QLabel("Selected Source: -")
@@ -994,6 +1036,20 @@ class MainWindow(QMainWindow):
         self.lbl_system_status.setWordWrap(True)
         self.lbl_system_status.setObjectName("muted")
         left_v.addWidget(self.lbl_system_status)
+        self.lbl_model_status = QLabel(
+            "Temporal model: local development checkpoint selected; provisional scoring disabled "
+            "until full training and validation complete."
+        )
+        self.lbl_model_status.setWordWrap(True)
+        self.lbl_model_status.setObjectName("muted")
+        left_v.addWidget(self.lbl_model_status)
+        self.ed_videomae_model.textChanged.connect(
+            lambda _value: self._refresh_temporal_model_status()
+        )
+        self.cb_strike_backend.currentIndexChanged.connect(
+            lambda _value: self._refresh_temporal_model_status()
+        )
+        self._refresh_temporal_model_status()
         self._refresh_ring_roi_status()
         grid.addWidget(left, 0, 0, 2, 1)
 
@@ -1145,6 +1201,7 @@ class MainWindow(QMainWindow):
                 "blocked_guarded",
                 "missed",
                 "clinch",
+                "uncertain",
                 "knockdown",
                 "foul",
                 "deduction",
@@ -1152,6 +1209,8 @@ class MainWindow(QMainWindow):
         )
         self.cb_tl_zone = QComboBox()
         self.cb_tl_zone.addItems(["ALL", "head", "body", "unknown"])
+        self.cb_tl_abstained = QComboBox()
+        self.cb_tl_abstained.addItems(["ALL EVENTS", "ABSTAINED ONLY", "ACCEPTED ONLY"])
         self.spn_tl_round = QSpinBox()
         self.spn_tl_round.setRange(0, 15)
         self.spn_tl_round.setValue(0)
@@ -1161,6 +1220,7 @@ class MainWindow(QMainWindow):
         timeline_filters.addWidget(self.cb_tl_role)
         timeline_filters.addWidget(self.cb_tl_label)
         timeline_filters.addWidget(self.cb_tl_zone)
+        timeline_filters.addWidget(self.cb_tl_abstained)
         timeline_filters.addWidget(self.spn_tl_round)
         timeline_filters.addWidget(self.btn_tl_refresh)
         rb.addLayout(timeline_filters)
@@ -1649,6 +1709,11 @@ class MainWindow(QMainWindow):
             zone_filter=self.cb_tl_zone.currentText(),
             round_filter=int(self.spn_tl_round.value()),
             include_invalidated=False,
+            abstained_filter={
+                0: "ALL",
+                1: "ABSTAINED",
+                2: "ACCEPTED",
+            }.get(self.cb_tl_abstained.currentIndex(), "ALL"),
         )
         lines = format_timeline_rows(self.filtered_timeline_events)
         if not lines:
@@ -1807,6 +1872,46 @@ class MainWindow(QMainWindow):
             self._refresh_system_check_status("System Check: Not run")
             self._log("Camera capture disabled.")
 
+    def _refresh_temporal_model_status(self) -> None:
+        mode = {
+            0: "local",
+            1: "roboflow",
+            2: "hybrid",
+            3: "videomae",
+            4: "hybrid_videomae",
+        }.get(self.cb_strike_backend.currentIndex(), "hybrid_videomae")
+        if mode not in {"videomae", "hybrid_videomae"}:
+            self.lbl_model_status.setText(
+                f"Temporal model: not used by the selected {mode} backend."
+            )
+            return
+        model_dir = os.path.abspath(self.ed_videomae_model.text().strip())
+        metadata_path = os.path.join(model_dir, "varbox_model_metadata.json")
+        if not os.path.isdir(model_dir):
+            self.lbl_model_status.setText(
+                f"Temporal model: missing local directory; device={config.VIDEOMAE_DEVICE}."
+            )
+            return
+        status = "checkpoint ready for lazy load"
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path, encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                if bool(int(metadata.get("smoke_trained", 1) or 0)):
+                    status += "; smoke/development model, provisional scoring disabled"
+                else:
+                    status += (
+                        "; validation macro-F1="
+                        f"{float(metadata.get('best_validation_macro_f1', 0.0)):.3f}"
+                    )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                status += "; metadata unreadable, provisional scoring disabled"
+        else:
+            status += "; training metadata missing, provisional scoring disabled"
+        self.lbl_model_status.setText(
+            f"Temporal model: {status}; device={config.VIDEOMAE_DEVICE}."
+        )
+
     def _run(self):
         if not self.cfg.use_camera and not self.cfg.input_path:
             QMessageBox.warning(self, APP_TITLE, "Pick a video or enable camera capture.")
@@ -1823,6 +1928,29 @@ class MainWindow(QMainWindow):
             self.cb_backend.currentIndex(),
             "auto",
         )
+        self.cfg.strike_backend = {
+            0: "local",
+            1: "roboflow",
+            2: "hybrid",
+            3: "videomae",
+            4: "hybrid_videomae",
+        }.get(self.cb_strike_backend.currentIndex(), "hybrid_videomae")
+        self.cfg.identity_backend = (
+            "sam2" if self.cb_identity_backend.currentIndex() == 0 else "hmm_reid"
+        )
+        self.cfg.videomae_model_dir = os.path.abspath(
+            self.ed_videomae_model.text().strip()
+        )
+        self.cfg.videomae_confidence = float(self.spn_videomae_confidence.value())
+        if self.cfg.strike_backend in {"videomae", "hybrid_videomae"} and not os.path.isdir(
+            self.cfg.videomae_model_dir
+        ):
+            QMessageBox.warning(
+                self,
+                APP_TITLE,
+                f"Local VideoMAE model directory not found:\n{self.cfg.videomae_model_dir}",
+            )
+            return
         self.cfg.camera_index = int(self.cb_cam_index.currentText())
         self.cfg.camera_seconds = int(self.spn_secs.value())
         self.cfg.fps_override = int(self.spn_fps.value()) or None

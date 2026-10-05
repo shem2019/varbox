@@ -21,6 +21,11 @@ def test_eval_runner_metrics_and_report(tmp_path):
     assert metrics["id_switch_rate"] == pytest.approx(0.2857)
     assert metrics["timing_alignment_error_s"] == pytest.approx(0.155)
     assert metrics["clip_evidence_integrity"] == pytest.approx(1.0)
+    temporal = metrics["temporal_pipeline_metrics"]
+    assert temporal["punch_candidate_recall"] == pytest.approx(1.0)
+    assert temporal["abstention_rate"] == pytest.approx(0.0)
+    assert temporal["identity_uncertain_event_rate"] == pytest.approx(0.0)
+    assert len(temporal["confusion_matrix"]) == 5
     assert metrics["quality_index"] == pytest.approx(0.73)
 
     out_path = tmp_path / "metrics.json"
