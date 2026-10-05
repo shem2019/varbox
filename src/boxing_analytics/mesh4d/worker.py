@@ -96,7 +96,9 @@ def publish(dash: Dashboard, web_dir: Path, title: str, job_id: int | None = Non
         rel = f.relative_to(web_dir).as_posix()
         print(f"upload {i}/{len(files)} {rel} ({f.stat().st_size / 1e6:.1f} MB)", flush=True)
         dash.upload_file(analysis_id, f, rel)
-    dash.call("POST", f"analyses/{analysis_id}/finalize", json={"analysis": analysis})
+    dash.call(
+        "POST", f"analyses/{analysis_id}/finalize", json={"analysis": analysis, "replace": True}
+    )
     print(f"published analysis {analysis_id}: {title}", flush=True)
     return analysis_id
 

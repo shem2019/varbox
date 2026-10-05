@@ -263,3 +263,36 @@ def test_olympic_matching_is_one_to_one() -> None:
     r = evaluate(gt, events)
     assert r["matched"] == 1 and r["recall"] == 0.5
     assert r["hand_accuracy"] == 1.0 and r["outcome_accuracy_4class"] == 1.0
+
+
+def test_collapsed_track_is_marked_hidden() -> None:
+    from boxing_analytics.mesh4d.reconstruct import resolve_collapses
+
+    rng = np.random.default_rng(6)
+    red_kp, _ = _figure(np.array([0.0, 0, 0]), np.array([0.0, 0, 1]), rng)
+    blue_kp, _ = _figure(np.array([0.0, 0, 1.0]), np.array([0.0, 0, -1]), rng)
+    n = 40
+    kps = {"red": np.repeat(red_kp[None], n, 0), "blue": np.repeat(blue_kp[None], n, 0)}
+    # Frames 15-24: blue's track jumps onto red (blue walked behind red).
+    kps["blue"][15:25] = red_kp + np.array([0.02, 0.0, 0.03])
+    valid = {"red": np.ones(n, bool), "blue": np.ones(n, bool)}
+    occlusion = {"red": np.zeros(n), "blue": np.zeros(n)}
+    hidden = resolve_collapses(kps, valid, occlusion, None, 50.0)
+    assert hidden["blue"][15:25].all()
+    assert not hidden["red"].any()
+    assert not hidden["blue"][:13].any() and not hidden["blue"][27:].any()
+
+
+def test_clinch_at_normal_distance_is_left_alone() -> None:
+    from boxing_analytics.mesh4d.reconstruct import resolve_collapses
+
+    rng = np.random.default_rng(7)
+    red_kp, _ = _figure(np.array([0.0, 0, 0]), np.array([0.0, 0, 1]), rng)
+    blue_kp, _ = _figure(np.array([0.0, 0, 0.45]), np.array([0.0, 0, -1]), rng)
+    n = 20
+    kps = {"red": np.repeat(red_kp[None], n, 0), "blue": np.repeat(blue_kp[None], n, 0)}
+    valid = {"red": np.ones(n, bool), "blue": np.ones(n, bool)}
+    hidden = resolve_collapses(
+        kps, valid, {"red": np.zeros(n), "blue": np.zeros(n)}, np.full(n, 0.2), 50.0
+    )
+    assert not hidden["red"].any() and not hidden["blue"].any()

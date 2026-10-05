@@ -105,6 +105,73 @@ class ViewScene:
             )
 
 
+def _pelvis(kp: NDArray) -> NDArray:
+    return 0.5 * (kp[:, KP["left_hip"]] + kp[:, KP["right_hip"]])
+
+
+def resolve_collapses(
+    kps: dict[str, NDArray],
+    valid: dict[str, NDArray],
+    occlusion: dict[str, NDArray],
+    pair_iou: NDArray | None,
+    fps: float,
+    *,
+    iou_limit: float = 0.45,
+    min_pelvis_m: float = 0.22,
+) -> dict[str, NDArray]:
+    """Frames where both tracks sit on the same boxer, and which track is the impostor.
+
+    When one boxer passes behind the other, both masks can lock onto the visible one and two
+    bodies get built from one person. Such frames show near-identical masks or two pelvises
+    closer than two people can stand. In each stretch, the track that jumped away from where its
+    boxer just was is the impostor; that boxer is hidden there. Returns {role: hidden frames}.
+    """
+    a, b = sorted(kps)
+    t_len = kps[a].shape[0]
+    both = valid[a] & valid[b]
+    dist = np.linalg.norm(_pelvis(kps[a]) - _pelvis(kps[b]), axis=1)
+    collapsed = both & (np.nan_to_num(dist, nan=9.0) < min_pelvis_m)
+    if pair_iou is not None:
+        collapsed |= both & (np.nan_to_num(np.asarray(pair_iou), nan=0.0) > iou_limit)
+    hidden = {a: np.zeros(t_len, dtype=bool), b: np.zeros(t_len, dtype=bool)}
+    if not collapsed.any():
+        return hidden
+    pad = max(1, int(round(0.04 * fps)))
+    clean = both & ~collapsed
+    i = 0
+    while i < t_len:
+        if not collapsed[i]:
+            i += 1
+            continue
+        s = i
+        while i < t_len and collapsed[i]:
+            i += 1
+        e = i  # exclusive
+        before = np.flatnonzero(clean[:s])
+        after = np.flatnonzero(clean[e:]) + e
+        ref = before[-1] if before.size else (after[0] if after.size else None)
+        span = slice(s, e)
+        if ref is None:
+            jump = {r: 0.0 for r in (a, b)}
+        else:
+            jump = {
+                r: float(
+                    np.nanmean(
+                        np.linalg.norm(_pelvis(kps[r][span]) - _pelvis(kps[r][[ref]]), axis=1)
+                    )
+                )
+                for r in (a, b)
+            }
+        if abs(jump[a] - jump[b]) > 0.1:
+            impostor = a if jump[a] > jump[b] else b
+        else:
+            impostor = (
+                a if float(np.mean(occlusion[a][span])) >= float(np.mean(occlusion[b][span])) else b
+            )
+        hidden[impostor][max(0, s - pad) : min(t_len, e + pad)] = True
+    return hidden
+
+
 def build_view_scene(
     body: dict[str, Any],
     occlusion: dict[str, NDArray],
@@ -112,6 +179,7 @@ def build_view_scene(
     log: LogFn = print,
     *,
     smooth: bool = True,
+    pair_iou: NDArray | None = None,
 ) -> ViewScene:
     roles: list[str] = [r for r in body["roles"] if "kp3d" in body["data"][r]]
     data = body["data"]
@@ -146,15 +214,33 @@ def build_view_scene(
             if k_ok.any():
                 # Half-second median window ignores brief hops where no foot touches the floor.
                 k = smooth_series(np.nan_to_num(k_full, nan=1.0), k_ok, max(3, int(0.5 * fps)) | 1)
-        kp = kp * k[:, None, None]
-        v = v * k[:, None, None].astype(np.float32)
+        verts[r] = v * k[:, None, None].astype(np.float32)
+        kps[r] = kp * k[:, None, None]
+        valid[r] = ok
+        scale_k[r] = k
+
+    fighters = [r for r in ("red", "blue") if r in roles]
+    if len(fighters) == 2:
+        hidden = resolve_collapses(
+            {r: kps[r] for r in fighters},
+            {r: valid[r] for r in fighters},
+            {r: np.asarray(occlusion.get(r, np.zeros(t_len))) for r in fighters},
+            pair_iou,
+            fps,
+        )
+        for r, frames in hidden.items():
+            if frames.any():
+                valid[r] = valid[r] & ~frames
+                log(f"world: {r} hidden behind the other boxer on {int(frames.sum())} frames")
+
+    for r in roles:
+        ok, kp, v = valid[r], kps[r], verts[r]
         if smooth and ok.sum() > 2:
             kp[ok] = one_euro(kp[ok], fps)
             v[ok] = one_euro(v[ok].astype(np.float64), fps, min_cutoff=1.5).astype(np.float32)
-        verts[r], kps[r], valid[r], scale_k[r] = v, kp, ok, k
         if ok.any():
             pelvis_samples.append(0.5 * (kp[ok, KP["left_hip"]] + kp[ok, KP["right_hip"]]))
-        k_median = float(np.median(k[ok])) if ok.any() else 1.0
+        k_median = float(np.median(scale_k[r][ok])) if ok.any() else 1.0
         log(f"world: {r} valid {ok.mean():.0%}, depth scale k median {k_median:.3f}")
 
     anchor = (

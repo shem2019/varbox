@@ -39,19 +39,37 @@ def _even(value: float) -> int:
     return int(round(value / 2.0)) * 2
 
 
-def _label_frame(store: MaskStore, frame: int, size: tuple[int, int]) -> NDArray:
+Visible = dict[str, NDArray]  # role -> bool per window frame
+
+
+def _label_frame(
+    store: MaskStore,
+    frame: int,
+    size: tuple[int, int],
+    visible: Visible | None = None,
+    start: int = 0,
+) -> NDArray:
     w, h = size
     out = np.zeros((h, w), dtype=np.uint8)
     for role, (_, mask) in store.get(frame).items():
         if mask is None or role not in LABEL_LEVELS:
             continue
+        seen = visible.get(role) if visible else None
+        if seen is not None and 0 <= frame - start < seen.shape[0] and not seen[frame - start]:
+            continue  # hidden behind the other boxer: its mask sits on the wrong person
         small = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST) > 0
         out[small] = LABEL_LEVELS[role]
     return out
 
 
 def build_layers_video(
-    video_path: str, store: MaskStore, start: int, stop: int, fps: float, out_path: Path
+    video_path: str,
+    store: MaskStore,
+    start: int,
+    stop: int,
+    fps: float,
+    out_path: Path,
+    visible: Visible | None = None,
 ) -> tuple[int, int]:
     """Stacked footage (top) and label map (bottom), H.264, browser friendly."""
     cap = cv2.VideoCapture(video_path)
@@ -69,7 +87,7 @@ def build_layers_video(
     assert proc.stdin is not None
     for index, frame in iter_frames(video_path, start, stop):
         top = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
-        label = _label_frame(store, index, (w, h))
+        label = _label_frame(store, index, (w, h), visible, start)
         stacked = np.vstack([top, cv2.cvtColor(label, cv2.COLOR_GRAY2BGR)])
         proc.stdin.write(stacked.tobytes())
     proc.stdin.close()
@@ -134,6 +152,7 @@ def export_web(run_dir: Path, title: str | None = None, log: LogFn = print) -> P
         frames = z["frames"]
         world_from_cam = z["world_from_cam"]
         intrinsics = z["intrinsics"]
+        visible = {r: z[f"{r}_valid"] for r in store.roles if f"{r}_valid" in z.files}
     start, stop = int(frames[0]), int(frames[-1]) + 1
     cap = cv2.VideoCapture(meta["video_a"])
     fps = float(cap.get(cv2.CAP_PROP_FPS))
@@ -141,7 +160,7 @@ def export_web(run_dir: Path, title: str | None = None, log: LogFn = print) -> P
     cap.release()
 
     started = time.monotonic()
-    w, h = build_layers_video(meta["video_a"], store, start, stop, fps, out / "layers.mp4")
+    w, h = build_layers_video(meta["video_a"], store, start, stop, fps, out / "layers.mp4", visible)
     log(f"web: layers video {w}x{2 * h} in {time.monotonic() - started:.0f}s")
     plate = build_plate(meta["video_a"], store, start, stop, (w, h))
     cv2.imwrite(str(out / "plate.jpg"), plate, [cv2.IMWRITE_JPEG_QUALITY, 90])

@@ -97,6 +97,15 @@ class MaskStore:
             out[role] = (box, unpack(data[f"{role}_bits"][local], self.shape))
         return out
 
+    def pair_iou(self, frame: int, a: str = "red", b: str = "blue") -> float:
+        """Overlap of two roles' masks; near 1 means both tracks sit on the same person."""
+        entries = self.get(frame)
+        ma, mb = entries.get(a, (None, None))[1], entries.get(b, (None, None))[1]
+        if ma is None or mb is None:
+            return 0.0
+        union = float((ma | mb).sum())
+        return float((ma & mb).sum()) / union if union else 0.0
+
     def occlusion(self, frame: int) -> dict[str, float]:
         """Fraction of each role's mask box covered by any other role's mask."""
         entries = self.get(frame)
@@ -160,8 +169,12 @@ def track_masks(
         ),
         encoding="utf-8",
     )
+    # One owner per pixel: an occluded boxer's mask shrinks instead of copying the visible one.
     predictor = build_sam2_video_predictor(
-        config.model_config, config.checkpoint, device=config.device
+        config.model_config,
+        config.checkpoint,
+        device=config.device,
+        hydra_overrides_extra=["++model.non_overlap_masks=true"],
     )
     obj_ids = {role: i + 1 for i, role in enumerate(roles)}
     id_roles = {v: k for k, v in obj_ids.items()}

@@ -57,6 +57,22 @@ function find(string $table, int $id): array
     return $row;
 }
 
+function delete_analysis(int $id): void
+{
+    $dir = storage_path("analyses/$id");
+    if (is_dir($dir)) {
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($it as $f) {
+            $f->isDir() ? rmdir($f->getPathname()) : unlink($f->getPathname());
+        }
+        rmdir($dir);
+    }
+    db()->prepare('DELETE FROM analyses WHERE id = ?')->execute([$id]);
+}
+
 function append_chunk(string $file, int $offset, int $total): int
 {
     if ($offset < 0 || $total <= 0) {
@@ -123,18 +139,7 @@ function user_api(string $route, string $method): never
             $row['title'] = $title;
         }
         if ($method === 'DELETE') {
-            $dir = storage_path("analyses/$id");
-            if (is_dir($dir)) {
-                $it = new RecursiveIteratorIterator(
-                    new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
-                    RecursiveIteratorIterator::CHILD_FIRST
-                );
-                foreach ($it as $f) {
-                    $f->isDir() ? rmdir($f->getPathname()) : unlink($f->getPathname());
-                }
-                rmdir($dir);
-            }
-            $db->prepare('DELETE FROM analyses WHERE id = ?')->execute([$id]);
+            delete_analysis($id);
             json_out(['ok' => true]);
         }
         $files = [];
@@ -357,6 +362,14 @@ function worker_api(string $route, string $method): never
     if (preg_match('#^analyses/(\d+)/finalize$#', $route, $m)) {
         $row = find('analyses', (int) $m[1]);
         $analysis = (array) ($in['analysis'] ?? json_decode($row['meta'], true));
+        if (!empty($in['replace'])) {
+            // A republished analysis takes the place of earlier versions with the same title.
+            $old = $db->prepare("SELECT id FROM analyses WHERE title = ? AND id != ? AND status = 'ready'");
+            $old->execute([(string) ($analysis['title'] ?? $row['title']), $row['id']]);
+            foreach ($old->fetchAll() as $o) {
+                delete_analysis((int) $o['id']);
+            }
+        }
         $db->prepare("UPDATE analyses SET status = 'ready', title = ?, meta = ? WHERE id = ?")
             ->execute([(string) ($analysis['title'] ?? $row['title']), json_encode($analysis), $row['id']]);
         if ($row['job_id']) {

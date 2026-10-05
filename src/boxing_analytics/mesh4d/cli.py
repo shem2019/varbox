@@ -55,15 +55,20 @@ def _window(info: VideoInfo, start_s: float, duration_s: float) -> tuple[int, in
     return start, stop
 
 
-def _occlusion_series(mask_dir: Path, start: int, stop: int) -> dict[str, np.ndarray]:
+def _occlusion_series(
+    mask_dir: Path, start: int, stop: int
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Per-role occlusion and the red/blue mask overlap for every frame of the window."""
     from boxing_analytics.mesh4d.masklets import MaskStore
 
     store = MaskStore(mask_dir)
     out = {r: np.ones(stop - start, dtype=np.float32) for r in store.roles}
+    pair = np.zeros(stop - start, dtype=np.float32)
     for i, frame in enumerate(range(start, stop)):
         for role, value in store.occlusion(frame).items():
             out[role][i] = value
-    return out
+        pair[i] = store.pair_iou(frame)
+    return out, pair
 
 
 def run(args: argparse.Namespace) -> int:
@@ -267,8 +272,8 @@ def run(args: argparse.Namespace) -> int:
         path = vdir / "scene.npz"
         if "world" in only and not path.exists():
             body = load_body(vdir / "body", view["start"], view["stop"])
-            occ = _occlusion_series(vdir / "masks", view["start"], view["stop"])
-            scene = build_view_scene(body, occ, view["info"].fps, log)
+            occ, pair_iou = _occlusion_series(vdir / "masks", view["start"], view["stop"])
+            scene = build_view_scene(body, occ, view["info"].fps, log, pair_iou=pair_iou)
             scene.save(path)
         if path.exists():
             scenes[name] = ViewScene.load(path)
