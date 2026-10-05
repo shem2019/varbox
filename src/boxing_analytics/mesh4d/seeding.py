@@ -91,12 +91,16 @@ def colour_scores(patch: NDArray) -> dict[str, float]:
     return {"red": red.sum() / n, "blue": blue.sum() / n, "white": white.sum() / n}
 
 
+_MODELS: dict[str, Any] = {}
+
+
 def detect_people(frame: NDArray, model_path: str, device: str) -> list[tuple[Box, float, NDArray]]:
     from ultralytics import YOLO  # type: ignore[import-untyped]
 
-    model = YOLO(model_path)
-    result = model.predict(frame, device=device, verbose=False, conf=0.3, classes=[0])[0]
-    people = []
+    if model_path not in _MODELS:
+        _MODELS[model_path] = YOLO(model_path)
+    result = _MODELS[model_path].predict(frame, device=device, verbose=False, conf=0.3, classes=[0])[0]
+    people: list[tuple[Box, float, NDArray]] = []
     if result.boxes is None:
         return people
     boxes = result.boxes.xyxy.cpu().numpy()
@@ -111,19 +115,34 @@ def detect_people(frame: NDArray, model_path: str, device: str) -> list[tuple[Bo
     return people
 
 
-def auto_seed(
-    frame: NDArray,
-    frame_index: int,
-    *,
-    model_path: str,
-    device: str,
-    with_referee: bool,
-) -> dict[str, Seed]:
-    """Assign red/blue (+referee) among the largest people in the central part of the frame."""
+def _containment(inner: Box, outer: Box) -> float:
+    x1, y1 = max(inner[0], outer[0]), max(inner[1], outer[1])
+    x2, y2 = min(inner[2], outer[2]), min(inner[3], outer[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    area = max(1e-6, (inner[2] - inner[0]) * (inner[3] - inner[1]))
+    return inter / area
+
+
+def _iou(a: Box, b: Box) -> float:
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / max(union, 1e-6)
+
+
+def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box, dict[str, float]]]:
     h, w = frame.shape[:2]
     people = detect_people(frame, model_path, device)
-    candidates = []
-    for box, conf, kps in people:
+    people.sort(key=lambda p: (p[0][2] - p[0][0]) * (p[0][3] - p[0][1]), reverse=True)
+    kept: list[tuple[Box, float, NDArray | None]] = []
+    for person in people:
+        # A partial box mostly inside a bigger one is the same person (or an occluded one).
+        if any(_containment(person[0], k[0]) > 0.6 for k in kept):
+            continue
+        kept.append(person)
+    out = []
+    for box, conf, kps in kept:
         x1, y1, x2, y2 = box
         area = (x2 - x1) * (y2 - y1) / float(w * h)
         cx = 0.5 * (x1 + x2) / w
@@ -138,37 +157,84 @@ def auto_seed(
             for k in ("red", "blue", "white")
         }
         scores = {k: 0.65 * torso[k] + 0.35 * glove[k] for k in torso}
+        scores["torso_white"] = torso["white"]
         scores["area"] = area
         scores["conf"] = conf
-        candidates.append((box, scores))
-    candidates.sort(key=lambda c: c[1]["area"], reverse=True)
-    candidates = candidates[:5]
+        out.append((box, scores))
+    return out[:6]
+
+
+def auto_seed(
+    frame: NDArray,
+    frame_index: int,
+    *,
+    model_path: str,
+    device: str,
+    with_referee: bool,
+) -> dict[str, Seed]:
+    """Assign red/blue (+referee) among the largest people in the central part of the frame."""
+    return _assign(_candidates(frame, model_path, device), frame_index, with_referee)[0]
+
+
+def _assign(
+    candidates: list[tuple[Box, dict[str, float]]], frame_index: int, with_referee: bool
+) -> tuple[dict[str, Seed], float]:
+    """Role assignment plus a quality score: colour margins minus overlap between chosen people."""
     seeds: dict[str, Seed] = {}
     used: set[int] = set()
+    quality = 0.0
     for role in ("red", "blue"):
+        other = "blue" if role == "red" else "red"
         best_i, best_val = -1, -1.0
         for i, (_, sc) in enumerate(candidates):
             if i in used:
                 continue
-            val = sc[role] - 0.5 * sc["blue" if role == "red" else "red"]
+            val = sc[role] - 0.5 * sc[other] - 0.3 * sc["torso_white"]
             if val > best_val:
                 best_i, best_val = i, val
-        if best_i >= 0:
+        if best_i >= 0 and best_val > 0.02:
             used.add(best_i)
             box, sc = candidates[best_i]
-            seeds[role] = Seed(
-                role, frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()}
-            )
+            seeds[role] = Seed(role, frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()})
+            quality += min(best_val, 0.3)
+        else:
+            quality -= 1.0
     if with_referee:
-        remaining = [(i, c) for i, c in enumerate(candidates) if i not in used]
+        remaining = [
+            (i, c)
+            for i, c in enumerate(candidates)
+            if i not in used and c[1]["torso_white"] > 0.12 and c[1]["red"] < 0.08 and c[1]["blue"] < 0.08
+        ]
         if remaining:
-            i, (box, sc) = max(
-                remaining, key=lambda item: item[1][1]["white"] + 0.2 * item[1][1]["area"]
-            )
-            seeds["referee"] = Seed(
-                "referee", frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()}
-            )
-    return seeds
+            _, (box, sc) = max(remaining, key=lambda item: item[1][1]["torso_white"] + 0.2 * item[1][1]["area"])
+            seeds["referee"] = Seed("referee", frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()})
+            quality += 0.1
+        else:
+            quality -= 0.5
+    boxes = [s.box for s in seeds.values()]
+    overlap = max((_iou(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1 :]), default=0.0)
+    return seeds, quality - 2.0 * overlap
+
+
+def scan_for_seed(
+    video_path: str,
+    start: int,
+    stop: int,
+    *,
+    model_path: str,
+    device: str,
+    with_referee: bool,
+    step: int = 5,
+) -> tuple[dict[str, Seed], float]:
+    """Best seed frame in [start, stop): everyone found, colours clear, nobody overlapping."""
+    from boxing_analytics.mesh4d.video_io import iter_frames
+
+    best: tuple[dict[str, Seed], float] = ({}, -1e9)
+    for index, frame in iter_frames(video_path, start, stop, step):
+        seeds, quality = _assign(_candidates(frame, model_path, device), index, with_referee)
+        if quality > best[1]:
+            best = (seeds, quality)
+    return best
 
 
 def draw_seeds(frame: NDArray, seeds: dict[str, Seed]) -> NDArray:

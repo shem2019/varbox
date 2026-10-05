@@ -121,7 +121,7 @@ def run(args: argparse.Namespace) -> int:
     from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks
     from boxing_analytics.mesh4d.seeding import (
         Seed,
-        auto_seed,
+        scan_for_seed,
         draw_seeds,
         load_seeds,
         parse_manual_seeds,
@@ -141,16 +141,20 @@ def run(args: argparse.Namespace) -> int:
         seeds_path = vdir / "seeds.json"
         info: VideoInfo = view["info"]
         if "seed" in only and not seeds_path.exists():
-            frame = read_frame(info.path, view["start"])
-            seeds = auto_seed(
-                frame,
+            scan_stop = min(view["stop"], view["start"] + int(args.seed_scan_s * info.fps))
+            seeds, quality = scan_for_seed(
+                info.path,
                 view["start"],
+                scan_stop,
                 model_path=args.yolo_model,
                 device=args.device,
                 with_referee="referee" in roles,
             )
+            seed_frame = next(iter(seeds.values())).frame_index if seeds else view["start"]
+            frame = read_frame(info.path, seed_frame)
+            log(f"seed {name}: best frame {seed_frame} (quality {quality:.2f})")
             for role, box in parse_manual_seeds(view["seeds"]).items():
-                seeds[role] = Seed(role, view["start"], box, "manual", {})
+                seeds[role] = Seed(role, seed_frame, box, "manual", {})
             seeds = {r: s for r, s in seeds.items() if r in roles}
             missing = [r for r in roles if r not in seeds]
             if missing:
@@ -335,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--roles", default="red,blue", help="comma list from red,blue,referee")
     r.add_argument("--seed-a", action="append", help="manual seed for camera A: role=x1,y1,x2,y2")
     r.add_argument("--seed-b", action="append", help="manual seed for camera B: role=x1,y1,x2,y2")
+    r.add_argument("--seed-scan-s", type=float, default=3.0, help="seconds scanned for a clean seed frame")
     r.add_argument("--stages", help=f"comma list from {','.join(STAGES)} (default: all)")
     r.add_argument("--device", default="cuda")
     r.add_argument("--yolo-model", default="yolo11m-pose.pt")

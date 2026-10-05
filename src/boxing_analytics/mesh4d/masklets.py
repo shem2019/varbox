@@ -224,17 +224,29 @@ def track_masks(
                     r: np.zeros((n, (mask_shape[0] * mask_shape[1] + 7) // 8), dtype=np.uint8)
                     for r in roles
                 }
-                for local, ids, logits in predictor.propagate_in_video(state):
-                    for k, obj in enumerate(ids):
-                        role = id_roles[int(obj)]
-                        mask = (logits[k] > 0.0).squeeze(0).float().cpu().numpy().astype(bool)
-                        if mask.sum() < min_area:
-                            continue
-                        b = mask_to_box(mask)
-                        if b is None:
-                            continue
-                        boxes[role][local] = np.asarray(b, dtype=np.float32) / scale
-                        bits[role][local] = pack(mask)
+                def consume(stream: Any) -> None:
+                    for local, ids, logits in stream:
+                        for k, obj in enumerate(ids):
+                            role = id_roles[int(obj)]
+                            mask = (logits[k] > 0.0).squeeze(0).float().cpu().numpy().astype(bool)
+                            if mask.sum() < min_area:
+                                continue
+                            b = mask_to_box(mask)
+                            if b is None:
+                                continue
+                            boxes[role][local] = np.asarray(b, dtype=np.float32) / scale
+                            bits[role][local] = pack(mask)
+
+                consume(predictor.propagate_in_video(state))
+                if chunk_index == 0:
+                    # Seeds may sit a little after the window start: fill those frames backwards.
+                    first_seed = min(max(0, seeds[r].frame_index - chunk_start) for r in roles)
+                    if first_seed > 0:
+                        consume(
+                            predictor.propagate_in_video(
+                                state, start_frame_idx=first_seed, reverse=True
+                            )
+                        )
                 predictor.reset_state(state)
         for role in roles:
             good = np.flatnonzero(~np.isnan(boxes[role][:, 0]))
