@@ -33,7 +33,7 @@ def _force_float32_sam2_memory(predictor: Any) -> None:
     """
 
     import torch
-    from sam2.utils.misc import fill_holes_in_mask_scores  # type: ignore[import-untyped]
+    from sam2.utils.misc import fill_holes_in_mask_scores
 
     def run_single_frame_float32(
         self: Any,
@@ -421,7 +421,7 @@ class Sam2FighterIdentityTrack:
             )
         try:
             import torch
-            from sam2.build_sam import build_sam2_video_predictor  # type: ignore[import-untyped]
+            from sam2.build_sam import build_sam2_video_predictor
         except (ImportError, ModuleNotFoundError) as exc:
             self.status = "unavailable"
             self.error = f"SAM 2 package unavailable: {exc}"
