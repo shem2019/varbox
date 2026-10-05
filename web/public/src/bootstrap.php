@@ -36,7 +36,9 @@ function db(): PDO
     $pdo = new PDO('sqlite:' . storage_path('varbox.sqlite'));
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    $pdo->exec('PRAGMA journal_mode = WAL');
+    // Rollback journal rather than WAL: WAL leaves -wal/-shm files that break writes whenever a
+    // different system user opens the database (for example during maintenance over SSH).
+    $pdo->exec('PRAGMA journal_mode = DELETE');
     $pdo->exec('PRAGMA busy_timeout = 5000');
     $pdo->exec('PRAGMA foreign_keys = ON');
     migrate($pdo);
@@ -135,6 +137,14 @@ function start_session(): void
     $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'
         || ($_SERVER['HTTP_CF_VISITOR'] ?? '') !== '' && str_contains((string) $_SERVER['HTTP_CF_VISITOR'], 'https');
+    // Sessions live with the rest of the app state; the server's default temp path sits
+    // outside what this site may write.
+    $dir = storage_path('sessions');
+    if (!is_dir($dir)) {
+        mkdir($dir, 0770, true);
+    }
+    session_save_path($dir);
+    ini_set('session.gc_maxlifetime', (string) (60 * 60 * 24 * 14));
     session_name('varbox_session');
     session_set_cookie_params([
         'lifetime' => 60 * 60 * 24 * 14,
