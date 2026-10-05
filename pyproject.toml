@@ -131,6 +131,7 @@ module = [
   "mediapipe", "mediapipe.*",
   "huggingface_hub", "huggingface_hub.*",
   "torchreid", "torchreid.*",
+  "requests", "requests.*",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

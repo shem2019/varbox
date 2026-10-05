@@ -18,7 +18,7 @@ from typing import Any, cast
 import cv2
 import numpy as np
 
-from boxing_analytics.mesh4d.seeding import Seed, auto_seed
+from boxing_analytics.mesh4d.seeding import Seed, auto_seed, detect_roles
 from boxing_analytics.mesh4d.video_io import VideoInfo, iter_frames
 
 NDArray = np.ndarray[Any, Any]
@@ -41,6 +41,14 @@ def mask_to_box(mask: NDArray) -> tuple[float, float, float, float] | None:
     if xs.size == 0:
         return None
     return float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)
+
+
+def _box_iou(a: NDArray, b: NDArray) -> float:
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return float(inter / max(union, 1e-6))
 
 
 def pack(mask: NDArray) -> NDArray:
@@ -191,6 +199,12 @@ def track_masks(
                 state = predictor.init_state(
                     video_path=str(tmp_dir), offload_video_to_cpu=True, async_loading_frames=False
                 )
+                found: dict[str, Seed] = {}
+                if chunk_index > 0:
+                    frame0 = next(iter_frames(video.path, chunk_start, chunk_start + 1))[1]
+                    found = detect_roles(
+                        frame0, chunk_start, model_path=config.yolo_model, device=config.device
+                    )
                 for role in roles:
                     if chunk_index == 0:
                         seed = seeds[role]
@@ -199,25 +213,40 @@ def track_masks(
                         predictor.add_new_points_or_box(
                             state, frame_idx=local, obj_id=obj_ids[role], box=box
                         )
-                    elif role in carry:
-                        predictor.add_new_mask(
-                            state, frame_idx=0, obj_id=obj_ids[role], mask=carry[role]
+                        continue
+                    carried = carry.get(role)
+                    detected = found.get(role)
+                    carried_box = mask_to_box(carried) if carried is not None else None
+                    if detected is not None and (
+                        carried_box is None
+                        or _box_iou(np.asarray(carried_box) / scale, np.asarray(detected.box)) < 0.3
+                    ):
+                        # Tracking lost or drifted: lock back onto the colour-confirmed boxer.
+                        box = np.asarray(detected.box, dtype=np.float32) * scale
+                        predictor.add_new_points_or_box(
+                            state, frame_idx=0, obj_id=obj_ids[role], box=box
                         )
-                    else:
+                        log(f"masks: re-anchored {role} at frame {chunk_start}")
+                    elif carried is not None:
+                        predictor.add_new_mask(
+                            state, frame_idx=0, obj_id=obj_ids[role], mask=carried
+                        )
+                    elif role == "referee":
                         frame0 = next(iter_frames(video.path, chunk_start, chunk_start + 1))[1]
-                        found = auto_seed(
+                        ref = auto_seed(
                             frame0,
                             chunk_start,
                             model_path=config.yolo_model,
                             device=config.device,
-                            with_referee=role == "referee",
-                        )
-                        if role in found:
-                            box = np.asarray(found[role].box, dtype=np.float32) * scale
+                            with_referee=True,
+                        ).get("referee")
+                        if ref is not None:
+                            box = np.asarray(ref.box, dtype=np.float32) * scale
                             predictor.add_new_points_or_box(
                                 state, frame_idx=0, obj_id=obj_ids[role], box=box
                             )
-                            log(f"masks: re-seeded {role} at frame {chunk_start}")
+                    else:
+                        log(f"masks: {role} out of view at frame {chunk_start}")
                 n = len(frames)
                 boxes = {r: np.full((n, 4), np.nan, dtype=np.float32) for r in roles}
                 bits = {

@@ -131,6 +131,7 @@ def run(args: argparse.Namespace) -> int:
     from boxing_analytics.mesh4d.seeding import (
         Seed,
         draw_seeds,
+        has_fighters,
         load_seeds,
         parse_manual_seeds,
         save_seeds,
@@ -159,6 +160,18 @@ def run(args: argparse.Namespace) -> int:
                 device=args.device,
                 with_referee="referee" in roles,
             )
+            if not has_fighters(seeds) and scan_stop < view["stop"]:
+                # Nobody clean in the first seconds: keep looking through the whole window.
+                log(f"seed {name}: scanning the full window for a clean view of both boxers")
+                seeds, quality = scan_for_seed(
+                    info.path,
+                    scan_stop,
+                    view["stop"],
+                    model_path=args.yolo_model,
+                    device=args.device,
+                    with_referee="referee" in roles,
+                    step=max(5, int(info.fps / 2)),
+                )
             seed_frame = next(iter(seeds.values())).frame_index if seeds else view["start"]
             frame = read_frame(info.path, seed_frame)
             log(f"seed {name}: best frame {seed_frame} (quality {quality:.2f})")

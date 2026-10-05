@@ -139,6 +139,33 @@ def _iou(a: Box, b: Box) -> float:
     return inter / max(union, 1e-6)
 
 
+def _head_patch(frame: NDArray, box: Box, kps: NDArray | None) -> NDArray:
+    """Headgear region: around the face keypoints, or the top of the box."""
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = box
+    if kps is not None and kps.shape[0] >= 5 and np.any(kps[:5, 2] > 0.3):
+        pts = kps[:5][kps[:5, 2] > 0.3, :2]
+        cx, cy = pts.mean(axis=0)
+        r = max(6.0, 0.07 * (y2 - y1))
+    else:
+        cx, cy, r = 0.5 * (x1 + x2), y1 + 0.08 * (y2 - y1), max(6.0, 0.07 * (y2 - y1))
+    return frame[
+        max(0, int(cy - r)) : min(h, int(cy + r)), max(0, int(cx - r)) : min(w, int(cx + r))
+    ]
+
+
+def plausible_boxer(box: Box, frame_size: tuple[int, int]) -> bool:
+    """A standing, fully framed person: taller than wide and clear of the frame's edges."""
+    w, h = frame_size
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    if bh < 1.15 * bw:
+        return False
+    if y2 > 0.985 * h or x1 < 0.005 * w or x2 > 0.995 * w:
+        return False
+    return (bw * bh) / float(w * h) >= 0.004
+
+
 def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box, dict[str, float]]]:
     h, w = frame.shape[:2]
     people = detect_people(frame, model_path, device)
@@ -152,11 +179,10 @@ def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box,
     out = []
     for box, conf, kps in kept:
         x1, y1, x2, y2 = box
-        area = (x2 - x1) * (y2 - y1) / float(w * h)
-        cx = 0.5 * (x1 + x2) / w
-        if area < 0.004 or not (0.08 < cx < 0.92):
+        if not plausible_boxer(box, (w, h)):
             continue
         torso = colour_scores(_torso_patch(frame, box, kps))
+        head = colour_scores(_head_patch(frame, box, kps))
         gloves = [
             colour_scores(p) for p in _glove_patches(frame, kps, max(6, int(0.04 * (y2 - y1))))
         ]
@@ -164,12 +190,25 @@ def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box,
             k: float(np.mean([g[k] for g in gloves])) if gloves else 0.0
             for k in ("red", "blue", "white")
         }
-        scores = {k: 0.65 * torso[k] + 0.35 * glove[k] for k in torso}
+        scores = {k: 0.5 * torso[k] + 0.25 * glove[k] + 0.25 * head[k] for k in torso}
         scores["torso_white"] = torso["white"]
-        scores["area"] = area
+        scores["area"] = (x2 - x1) * (y2 - y1) / float(w * h)
         scores["conf"] = conf
         out.append((box, scores))
     return out[:6]
+
+
+def detect_roles(
+    frame: NDArray, frame_index: int, *, model_path: str, device: str, min_score: float = 0.08
+) -> dict[str, Seed]:
+    """Confident red/blue detections only, for re-anchoring tracking mid-clip."""
+    seeds, _ = _assign(_candidates(frame, model_path, device), frame_index, False)
+    out = {}
+    for role, seed in seeds.items():
+        other = "blue" if role == "red" else "red"
+        if seed.scores.get(role, 0.0) - 0.5 * seed.scores.get(other, 0.0) >= min_score:
+            out[role] = seed
+    return out
 
 
 def auto_seed(
@@ -252,6 +291,10 @@ def scan_for_seed(
         if quality > best[1]:
             best = (seeds, quality)
     return best
+
+
+def has_fighters(seeds: dict[str, Seed]) -> bool:
+    return "red" in seeds and "blue" in seeds
 
 
 def draw_seeds(frame: NDArray, seeds: dict[str, Seed]) -> NDArray:
