@@ -355,7 +355,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--hf-repo", default="facebook/sam-3d-body-dinov3")
     r.add_argument("--inference-type", default="body", help="SAM 3D Body decoder: body | full")
     r.add_argument(
-        "--no-mask-prompt", action="store_true", help="prompt SAM 3D Body with boxes only"
+        "--mask-prompt", action="store_true", help="also pass masks (checkpoint must support it)"
     )
     r.add_argument("--viewer-max-frames", type=int, default=1500)
     return p
