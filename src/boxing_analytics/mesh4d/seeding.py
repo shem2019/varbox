@@ -85,7 +85,8 @@ def colour_scores(patch: NDArray) -> dict[str, float]:
     h, s, v = hsv[:, 0], hsv[:, 1] / 255.0, hsv[:, 2] / 255.0
     chroma = (s > 0.35) & (v > 0.2)
     red = chroma & ((h <= 10) | (h >= 165))
-    blue = chroma & (h >= 95) & (h <= 130)
+    # Navy headgear and dark blue kit sit at low brightness, so blue accepts darker pixels.
+    blue = (s > 0.3) & (v > 0.1) & (h >= 95) & (h <= 132)
     white = (s < 0.25) & (v > 0.55)
     n = float(h.size)
     return {"red": red.sum() / n, "blue": blue.sum() / n, "white": white.sum() / n}
@@ -199,16 +200,18 @@ def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box,
 
 
 def detect_roles(
-    frame: NDArray, frame_index: int, *, model_path: str, device: str, min_score: float = 0.08
+    frame: NDArray, frame_index: int, *, model_path: str, device: str, min_separation: float = 0.12
 ) -> dict[str, Seed]:
-    """Confident red/blue detections only, for re-anchoring tracking mid-clip."""
+    """Both fighters with a clear colour difference, for re-anchoring tracking mid-clip.
+
+    When the two boxers look alike, nothing is returned: re-anchoring on a guess could swap them.
+    """
     seeds, _ = _assign(_candidates(frame, model_path, device), frame_index, False)
-    out = {}
-    for role, seed in seeds.items():
-        other = "blue" if role == "red" else "red"
-        if seed.scores.get(role, 0.0) - 0.5 * seed.scores.get(other, 0.0) >= min_score:
-            out[role] = seed
-    return out
+    if "red" not in seeds or "blue" not in seeds:
+        return {}
+    if seeds["red"].scores.get("separation", 0.0) < min_separation:
+        return {}
+    return {r: seeds[r] for r in ("red", "blue")}
 
 
 def auto_seed(
@@ -219,44 +222,51 @@ def auto_seed(
     device: str,
     with_referee: bool,
 ) -> dict[str, Seed]:
-    """Assign red/blue (+referee) among the largest people in the central part of the frame."""
+    """Red/blue (+referee) seeds from a single frame."""
     return _assign(_candidates(frame, model_path, device), frame_index, with_referee)[0]
 
 
 def _assign(
     candidates: list[tuple[Box, dict[str, float]]], frame_index: int, with_referee: bool
 ) -> tuple[dict[str, Seed], float]:
-    """Role assignment plus a quality score: colour margins minus overlap between chosen people."""
+    """Pick the two fighters, then decide red and blue by comparing the two of them.
+
+    Fighters are the largest fully framed people wearing sports kit (the white-shirted referee
+    is set aside). Corner colour then comes from the relative blue-minus-red of shirt, gloves and
+    headgear, so two boxers in similar singlets still get two distinct, consistent identities.
+    Quality rewards clear kit, a clear colour difference and separated boxes.
+    """
+
+    def is_referee(sc: dict[str, float]) -> bool:
+        return sc["torso_white"] > 0.12 and sc["red"] < 0.08 and sc["blue"] < 0.08
+
+    pool = [(i, c) for i, c in enumerate(candidates) if not is_referee(c[1])]
+    max_area = max((c[1]["area"] for _, c in pool), default=1.0)
+
+    def fighter_score(sc: dict[str, float]) -> float:
+        kit = min(1.0, (sc["red"] + sc["blue"]) / 0.4)
+        return 0.6 * sc["area"] / max_area + 0.4 * kit
+
+    ranked = sorted(pool, key=lambda item: fighter_score(item[1][1]), reverse=True)
+    fighters = ranked[:2]
     seeds: dict[str, Seed] = {}
-    used: set[int] = set()
-    quality = 0.0
-    for role in ("red", "blue"):
-        other = "blue" if role == "red" else "red"
-        best_i, best_val = -1, -1.0
-        for i, (_, sc) in enumerate(candidates):
-            if i in used:
-                continue
-            val = sc[role] - 0.5 * sc[other] - 0.3 * sc["torso_white"]
-            if val > best_val:
-                best_i, best_val = i, val
-        if best_i >= 0 and best_val > 0.02:
-            used.add(best_i)
-            box, sc = candidates[best_i]
-            seeds[role] = Seed(
-                role, frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()}
-            )
-            quality += min(best_val, 0.3)
-        else:
-            quality -= 1.0
+    quality = -2.0 * (2 - len(fighters))
+    if len(fighters) == 2:
+        (ia, (box_a, sa)), (ib, (box_b, sb)) = fighters
+        da, db = sa["blue"] - sa["red"], sb["blue"] - sb["red"]
+        (blue_box, blue_sc), (red_box, red_sc) = (
+            ((box_a, sa), (box_b, sb)) if da > db else ((box_b, sb), (box_a, sa))
+        )
+        separation = abs(da - db)
+        for role, box, sc in (("red", red_box, red_sc), ("blue", blue_box, blue_sc)):
+            scores = {k: round(v, 4) for k, v in sc.items()}
+            scores["separation"] = round(separation, 4)
+            seeds[role] = Seed(role, frame_index, box, "auto", scores)
+        kit = min(1.0, (sa["red"] + sa["blue"] + sb["red"] + sb["blue"]) / 0.8)
+        quality = 0.3 * kit + min(separation, 0.6)
+    used = {i for i, _ in fighters}
     if with_referee:
-        remaining = [
-            (i, c)
-            for i, c in enumerate(candidates)
-            if i not in used
-            and c[1]["torso_white"] > 0.12
-            and c[1]["red"] < 0.08
-            and c[1]["blue"] < 0.08
-        ]
+        remaining = [(i, c) for i, c in enumerate(candidates) if i not in used and is_referee(c[1])]
         if remaining:
             _, (box, sc) = max(
                 remaining, key=lambda item: item[1][1]["torso_white"] + 0.2 * item[1][1]["area"]
