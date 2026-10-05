@@ -17,7 +17,7 @@ import numpy as np
 
 from boxing_analytics.mesh4d.geometry import apply_transform, glove_centres
 from boxing_analytics.mesh4d.reconstruct import ViewScene
-from boxing_analytics.mesh4d.video_io import iter_frames, transcode_h264
+from boxing_analytics.mesh4d.video_io import iter_frames, prefetch, transcode_h264
 
 NDArray = np.ndarray[Any, Any]
 LogFn = Callable[[str], None]
@@ -139,7 +139,7 @@ def render_overlay(
     by_start: dict[int, list[dict[str, Any]]] = {}
     for e in events:
         by_start.setdefault(int(e["contact_frame"] or e["peak_frame"]) - start, []).append(e)
-    for local, (index, frame) in enumerate(iter_frames(video_path, start, stop)):
+    for local, (index, frame) in enumerate(prefetch(iter_frames(video_path, start, stop))):
         layers = []
         for r in scene.roles:
             if scene.valid[r][local]:

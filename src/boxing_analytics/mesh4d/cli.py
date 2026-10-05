@@ -362,19 +362,15 @@ def run(args: argparse.Namespace) -> int:
 
     # ---------------------------------------------------------------- renders + viewer
     if "render" in only:
+        from concurrent.futures import ThreadPoolExecutor
+
         from boxing_analytics.mesh4d.render import render_isolated, render_overlay
 
         render_dir = run_dir / "render"
         render_dir.mkdir(exist_ok=True)
-        overlay_a = render_overlay(
-            final,
-            views["A"]["info"].path,
-            render_dir / "overlay_A.mp4",
-            events,
-            device=args.device,
-            log=log,
-        )
-        log(f"render: {overlay_a}")
+        tasks: list[tuple[Any, ...]] = [
+            (render_overlay, final, views["A"]["info"].path, render_dir / "overlay_A.mp4", events)
+        ]
         if "B" in scenes:
             from boxing_analytics.mesh4d.sync import map_frame
 
@@ -390,20 +386,22 @@ def run(args: argparse.Namespace) -> int:
                             float(sync_meta["offset_s"]),  # type: ignore[index]
                         )
                 events_b.append(e2)
-            overlay_b = render_overlay(
-                scenes["B"],
-                views["B"]["info"].path,
-                render_dir / "overlay_B.mp4",
-                events_b,
-                device=args.device,
-                log=log,
+            tasks.append(
+                (
+                    render_overlay,
+                    scenes["B"],
+                    views["B"]["info"].path,
+                    render_dir / "overlay_B.mp4",
+                    events_b,
+                )
             )
-            log(f"render: {overlay_b}")
         for role in final.roles:
-            iso = render_isolated(
-                final, role, render_dir / f"isolated_{role}.mp4", device=args.device, log=log
-            )
-            log(f"render: {iso}")
+            tasks.append((render_isolated, final, role, render_dir / f"isolated_{role}.mp4"))
+        # Every video renders at once: each is mostly decoding, splatting and encoding.
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = [pool.submit(fn, *a, device=args.device, log=log) for fn, *a in tasks]
+            for future in futures:
+                log(f"render: {future.result()}")
 
     if "export" in only:
         from boxing_analytics.mesh4d.export import export_viewer
@@ -483,15 +481,20 @@ def combine(args: argparse.Namespace) -> int:
         contacts, _, _ = analyse(scene, n_views, log=log)
         render_dir = run_dir / "render"
         render_dir.mkdir(exist_ok=True)
-        render_overlay(
-            scene,
-            meta["video_a"],
-            render_dir / "overlay_A_combined.mp4",
-            combined,
-            device=args.device,
-            log=log,
-        )
-        export_viewer(scene, contacts, combined, run_dir / "viewer_combined", summary=summary)
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            overlay = pool.submit(
+                render_overlay,
+                scene,
+                meta["video_a"],
+                render_dir / "overlay_A_combined.mp4",
+                combined,
+                device=args.device,
+                log=log,
+            )
+            export_viewer(scene, contacts, combined, run_dir / "viewer_combined", summary=summary)
+            overlay.result()
     log("combine: done")
     return 0
 
