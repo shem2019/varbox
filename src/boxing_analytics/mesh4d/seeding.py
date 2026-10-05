@@ -86,7 +86,7 @@ def colour_scores(patch: NDArray) -> dict[str, float]:
     chroma = (s > 0.35) & (v > 0.2)
     red = chroma & ((h <= 10) | (h >= 165))
     blue = chroma & (h >= 95) & (h <= 130)
-    white = (s < 0.2) & (v > 0.7)
+    white = (s < 0.25) & (v > 0.55)
     n = float(h.size)
     return {"red": red.sum() / n, "blue": blue.sum() / n, "white": white.sum() / n}
 
@@ -210,7 +210,7 @@ def _assign(
             seeds["referee"] = Seed("referee", frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()})
             quality += 0.1
         else:
-            quality -= 0.5
+            quality -= 0.2
     boxes = [s.box for s in seeds.values()]
     overlap = max((_iou(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1 :]), default=0.0)
     return seeds, quality - 2.0 * overlap

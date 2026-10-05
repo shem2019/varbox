@@ -156,7 +156,9 @@ def run(args: argparse.Namespace) -> int:
             for role, box in parse_manual_seeds(view["seeds"]).items():
                 seeds[role] = Seed(role, seed_frame, box, "manual", {})
             seeds = {r: s for r, s in seeds.items() if r in roles}
-            missing = [r for r in roles if r not in seeds]
+            if "referee" in roles and "referee" not in seeds:
+                log(f"seed {name}: referee not found cleanly; tracking the two boxers only")
+            missing = [r for r in roles if r not in seeds and r != "referee"]
             if missing:
                 raise RuntimeError(
                     f"view {name}: could not seed {missing}; pass --seed-{name.lower()} role=x1,y1,x2,y2"
