@@ -15,6 +15,7 @@ Two cameras (offset found from audio unless --offset-s is given):
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import time
@@ -67,6 +68,13 @@ def _occlusion_series(mask_dir: Path, start: int, stop: int) -> dict[str, np.nda
 def run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Two runs on one directory overwrite each other's videos; hold an exclusive lock.
+    lock = (run_dir / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"another run is already using {run_dir}; not starting a second one")
+        return 75
     log = _log_to(run_dir / "run.log")
     only = set(args.stages.split(",")) if args.stages else set(STAGES)
     roles = [r.strip() for r in args.roles.split(",") if r.strip()]
