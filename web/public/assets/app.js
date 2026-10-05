@@ -363,12 +363,18 @@ async function gpuPage() {
      nohup python -m boxing_analytics.mesh4d.worker serve > ~/work/worker.log 2>&1 &`;
     body.innerHTML = `
       <div class="workers" style="margin-bottom:22px">${workers.length ? workers.map((w) => {
-        const i = w.info || {}, mem = i.mem_total_mb ? i.mem_used_mb / i.mem_total_mb : 0;
-        return `<div class="card worker"><div style="display:flex;justify-content:space-between;align-items:center"><strong>${esc(w.name)}</strong>
+        const i = w.info || {};
+        const pct = (a, b) => (b ? Math.min(100, Math.round(100 * a / b)) : 0);
+        const gb = (mb) => `${((mb || 0) / 1024).toFixed(1)} GB`;
+        const meter = (label, value, detail) => `<div class="meter-row"><div class="meter-label"><span>${label}</span><span class="num">${detail}</span></div><div class="meter"><i style="width:${value}%"></i></div></div>`;
+        return `<div class="card worker"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong>${esc(w.name)}</strong>
           <span class="chip"><span class="dot" style="color:${w.online ? 'var(--landed)' : 'var(--ink-3)'}"></span>${w.online ? 'online' : 'last seen ' + ago(w.last_seen)}</span></div>
-          <div class="muted" style="font-size:13px">${esc(i.gpu || 'GPU')}</div>
-          <div style="font-size:12px" class="muted">Busy ${i.util ?? 0}%</div><div class="meter"><i style="width:${i.util || 0}%"></i></div>
-          <div style="font-size:12px" class="muted">Memory ${fmtBytes((i.mem_used_mb || 0) * 1e6)} of ${fmtBytes((i.mem_total_mb || 0) * 1e6)}</div><div class="meter"><i style="width:${(100 * mem).toFixed(0)}%"></i></div></div>`;
+          <div class="muted" style="font-size:13px">${esc(i.gpu || 'GPU')} · ${i.cores || '?'} CPU cores${i.slots ? ` · ${i.slots} job${i.slots > 1 ? 's' : ''} at once` : ''}</div>
+          ${meter('GPU busy', i.util ?? 0, `${i.util ?? 0}%`)}
+          ${meter('GPU memory', pct(i.mem_used_mb, i.mem_total_mb), `${gb(i.mem_used_mb)} of ${gb(i.mem_total_mb)}`)}
+          ${meter('CPU busy', Math.round(i.cpu_util ?? 0), `${Math.round(i.cpu_util ?? 0)}%`)}
+          ${meter('RAM', pct(i.ram_used_mb, i.ram_total_mb), `${gb(i.ram_used_mb)} of ${gb(i.ram_total_mb)}`)}
+        </div>`;
       }).join('') : '<div class="card empty" style="grid-column:1/-1"><h3>Connect a GPU to start analysing</h3><p>Rent an NVIDIA GPU with 48 GB or more, then run the command below on it. It shows up here within a minute.</p></div>'}</div>
       <div class="card" style="padding:18px;display:grid;gap:10px"><h3 style="font-size:24px">Connect a GPU</h3>
         <p class="muted" style="margin:0">One command installs everything on a fresh machine and connects it to this dashboard. Keep the worker token private.</p>

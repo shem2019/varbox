@@ -23,7 +23,7 @@ import numpy as np
 
 from boxing_analytics.mesh4d.geometry import project
 from boxing_analytics.mesh4d.masklets import MaskStore
-from boxing_analytics.mesh4d.video_io import VideoInfo, iter_frames
+from boxing_analytics.mesh4d.video_io import VideoInfo, iter_frames, prefetch
 
 NDArray = np.ndarray[Any, Any]
 LogFn = Callable[[str], None]
@@ -237,7 +237,11 @@ class BodyRunner:
             n = c_stop - c_start
             store: dict[str, NDArray] = {"frames": np.arange(c_start, c_stop, dtype=np.int64)}
             arrays: dict[str, dict[str, Any]] = {r: {} for r in roles}
-            for local, (index, frame) in enumerate(iter_frames(video.path, c_start, c_stop)):
+            frames = prefetch(
+                iter_frames(video.path, c_start, c_stop),
+                transform=lambda item: (item[0], cv2.cvtColor(item[1], cv2.COLOR_BGR2RGB)),
+            )
+            for local, (index, rgb) in enumerate(frames):
                 entries = masks.get(index)
                 present = [r for r in roles if entries[r][0] is not None]
                 if not present:
@@ -260,7 +264,6 @@ class BodyRunner:
                                 interpolation=cv2.INTER_NEAREST,
                             )
                         )
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 people = self._run_frame(rgb, present, boxes, full_masks)
                 for role, person in people.items():
                     if self.convention is None:

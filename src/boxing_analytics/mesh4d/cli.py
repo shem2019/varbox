@@ -18,6 +18,8 @@ import argparse
 import fcntl
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -75,12 +77,14 @@ def run(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     # Two runs on one directory overwrite each other's videos; hold an exclusive lock.
-    lock = (run_dir / ".lock").open("w")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print(f"another run is already using {run_dir}; not starting a second one")
-        return 75
+    # Per-camera child processes run under their parent's lock.
+    lock = (run_dir / ".lock").open("a")
+    if not args.only_view:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"another run is already using {run_dir}; not starting a second one")
+            return 75
     log = _log_to(run_dir / "run.log")
     only = set(args.stages.split(",")) if args.stages else set(STAGES)
     roles = [r.strip() for r in args.roles.split(",") if r.strip()]
@@ -140,7 +144,30 @@ def run(args: argparse.Namespace) -> int:
         "sam3d_repo": args.hf_repo,
         "inference_type": args.inference_type,
     }
-    (run_dir / "run.json").write_text(safe_dumps(run_meta, indent=2), encoding="utf-8")
+    if not args.only_view:
+        (run_dir / "run.json").write_text(safe_dumps(run_meta, indent=2), encoding="utf-8")
+
+    # Two cameras: the heavy per-camera stages run as two processes at once, one per camera.
+    per_camera = only & {"seed", "masks", "body"}
+    if args.only_view:
+        views = {k: v for k, v in views.items() if k == args.only_view}
+    elif len(views) == 2 and per_camera and not args.serial:
+        log(f"cameras A and B processed in parallel ({', '.join(sorted(per_camera))})")
+        base = list(sys.argv[1:])
+        if "--stages" in base:
+            i = base.index("--stages")
+            del base[i : i + 2]
+        children = [
+            subprocess.Popen(
+                [sys.executable, "-m", "boxing_analytics.mesh4d.cli", *base]
+                + ["--stages", ",".join(sorted(per_camera)), "--only-view", name]
+            )
+            for name in views
+        ]
+        codes = [c.wait() for c in children]
+        if any(codes):
+            raise RuntimeError(f"per-camera processing failed (exit codes {codes})")
+        only -= per_camera
 
     # ---------------------------------------------------------------- seed + masks
     from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks
@@ -257,6 +284,9 @@ def run(args: argparse.Namespace) -> int:
             runner.run(
                 view["info"], view["start"], view["stop"], MaskStore(vdir / "masks"), vdir / "body"
             )
+
+    if args.only_view:
+        return 0
 
     # ---------------------------------------------------------------- floor-anchored 4D per view
     from boxing_analytics.mesh4d.reconstruct import (
@@ -566,6 +596,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--mask-prompt", action="store_true", help="also pass masks (checkpoint must support it)"
     )
     r.add_argument("--viewer-max-frames", type=int, default=1500)
+    r.add_argument(
+        "--serial", action="store_true", help="process the two cameras one after another"
+    )
+    r.add_argument("--only-view", choices=["A", "B"], help=argparse.SUPPRESS)
     c = sub.add_parser("combine", help="rescore a finished run's events with VideoMAE")
     c.add_argument("--run-dir", required=True)
     c.add_argument("--model-dir", default="models/varbox-videomae-cuda/best")

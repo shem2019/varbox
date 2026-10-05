@@ -103,9 +103,18 @@ def publish(dash: Dashboard, web_dir: Path, title: str, job_id: int | None = Non
     return analysis_id
 
 
-def gpu_status() -> dict[str, Any]:
+def _cpu_times() -> tuple[int, int]:
+    with open("/proc/stat", encoding="utf-8") as fh:
+        parts = [int(x) for x in fh.readline().split()[1:]]
+    idle = parts[3] + (parts[4] if len(parts) > 4 else 0)
+    return sum(parts), idle
+
+
+def system_status() -> dict[str, Any]:
+    """GPU, CPU and RAM use for the dashboard's GPU page."""
+    out: dict[str, Any] = {"cores": os.cpu_count() or 1}
     try:
-        out = subprocess.run(
+        raw = subprocess.run(
             [
                 "nvidia-smi",
                 "--query-gpu=name,memory.used,memory.total,utilization.gpu",
@@ -115,15 +124,37 @@ def gpu_status() -> dict[str, Any]:
             text=True,
             timeout=10,
         ).stdout.strip()
-        name, used, total, util = (x.strip() for x in out.splitlines()[0].split(","))
-        return {
-            "gpu": name,
-            "mem_used_mb": int(used),
-            "mem_total_mb": int(total),
-            "util": int(util),
-        }
+        name, used, total, util = (x.strip() for x in raw.splitlines()[0].split(","))
+        out.update(gpu=name, mem_used_mb=int(used), mem_total_mb=int(total), util=int(util))
     except Exception:
-        return {"gpu": "unknown"}
+        out["gpu"] = "unknown"
+    try:
+        t0, i0 = _cpu_times()
+        time.sleep(0.5)
+        t1, i1 = _cpu_times()
+        out["cpu_util"] = round(100.0 * (1 - (i1 - i0) / max(1, t1 - t0)), 1)
+        info = {}
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                key, value = line.split(":", 1)
+                info[key] = int(value.split()[0])
+        out["ram_total_mb"] = info["MemTotal"] // 1024
+        out["ram_used_mb"] = (info["MemTotal"] - info.get("MemAvailable", 0)) // 1024
+        out["load"] = round(os.getloadavg()[0], 2)
+    except Exception:
+        pass
+    return out
+
+
+gpu_status = system_status
+
+
+def auto_slots(status: dict[str, Any]) -> int:
+    """How many jobs fit at once: about 16 GB of GPU memory and 3 CPU cores per two-camera job."""
+    free_gb = (status.get("mem_total_mb", 0) - status.get("mem_used_mb", 0)) / 1024
+    by_gpu = int(free_gb // 16) if free_gb else 1
+    by_cpu = max(1, int(status.get("cores", 1)) // 3)
+    return max(1, min(3, by_gpu, by_cpu))
 
 
 STAGE_PATTERNS = [
@@ -280,26 +311,48 @@ def run_job(dash: Dashboard, job: dict[str, Any], workdir: Path, repo: Path) -> 
         stop.set()
 
 
-def serve(dash: Dashboard, workdir: Path, repo: Path, name: str) -> None:
-    print(f"worker {name} serving {dash.server}", flush=True)
-    while True:
-        try:
-            dash.call("POST", "heartbeat", json={"name": name, **gpu_status()})
-            job = dash.call("POST", "claim", json={"name": name}).get("job")
-        except Exception as exc:  # network blips: keep the worker alive
-            print(f"dashboard unreachable: {exc}", flush=True)
-            time.sleep(15)
-            continue
-        if not job:
-            time.sleep(10)
-            continue
-        print(f"claimed job {job['id']}: {job.get('title')}", flush=True)
-        try:
-            run_job(dash, job, workdir, repo)
-        except Exception as exc:
-            print(f"job {job['id']} failed: {exc}", flush=True)
+def serve(dash: Dashboard, workdir: Path, repo: Path, name: str, slots: int = 0) -> None:
+    """Heartbeat every 10 s and run up to `slots` jobs at once (0 = decide from the hardware)."""
+    slots = slots or auto_slots(system_status())
+    print(f"worker {name} serving {dash.server} with {slots} job slot(s)", flush=True)
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.is_set():
             with contextlib.suppress(Exception):
-                dash.call("POST", f"jobs/{job['id']}/fail", json={"message": str(exc)[:500]})
+                dash.call(
+                    "POST", "heartbeat", json={"name": name, "slots": slots, **system_status()}
+                )
+            stop.wait(10)
+
+    def slot(index: int) -> None:
+        while not stop.is_set():
+            try:
+                job = dash.call("POST", "claim", json={"name": f"{name}#{index}"}).get("job")
+            except Exception as exc:  # network blips: keep the worker alive
+                print(f"dashboard unreachable: {exc}", flush=True)
+                stop.wait(15)
+                continue
+            if not job:
+                stop.wait(10)
+                continue
+            print(f"slot {index} claimed job {job['id']}: {job.get('title')}", flush=True)
+            try:
+                run_job(dash, job, workdir, repo)
+            except Exception as exc:
+                print(f"job {job['id']} failed: {exc}", flush=True)
+                with contextlib.suppress(Exception):
+                    dash.call("POST", f"jobs/{job['id']}/fail", json={"message": str(exc)[:500]})
+
+    threads = [threading.Thread(target=heartbeat, daemon=True)]
+    threads += [threading.Thread(target=slot, args=(i + 1,), daemon=True) for i in range(slots)]
+    for t in threads:
+        t.start()
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        stop.set()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -316,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     srv = sub.add_parser("serve", help="process jobs imported on the dashboard")
     srv.add_argument("--workdir", default=str(Path.home() / "work" / "jobs"))
     srv.add_argument("--name", default=socket.gethostname())
+    srv.add_argument("--slots", type=int, default=int(os.environ.get("VARBOX_WORKER_SLOTS", "0")))
     args = p.parse_args(argv)
     if not args.token:
         p.error("set VARBOX_WORKER_TOKEN or pass --token")
@@ -330,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             web = export_web(run_dir, title=args.title)
         publish(dash, web, args.title or run_dir.name)
         return 0
-    serve(dash, Path(args.workdir), repo, args.name)
+    serve(dash, Path(args.workdir), repo, args.name, args.slots)
     return 0
 
 

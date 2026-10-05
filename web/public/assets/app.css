@@ -132,6 +132,8 @@ table.data tr.click:hover td { background: var(--surface-2); }
 /* GPU */
 .workers { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .worker { padding: 18px; display: grid; gap: 8px; }
+.meter-row { display: grid; gap: 4px; }
+.meter-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-3); }
 .meter { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--ink); }
 pre.cmd { margin: 0; padding: 12px 14px; background: var(--stage); color: #dfe3ea; border-radius: 8px; font: 500 12.5px/1.6 var(--mono); overflow-x: auto; white-space: pre; }

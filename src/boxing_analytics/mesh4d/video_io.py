@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import queue
 import shutil
 import subprocess
-from collections.abc import Iterator
+import threading
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,37 @@ def iter_frames(
             index += 1
     finally:
         cap.release()
+
+
+def prefetch(
+    items: Iterator[Any], depth: int = 24, transform: Callable[[Any], Any] | None = None
+) -> Iterator[Any]:
+    """Run an iterator (and an optional per-item transform) in a background thread.
+
+    Decoding video and preparing frames happen while the GPU works on earlier frames, so the
+    model never waits on the video file. Exceptions surface in the consuming thread.
+    """
+    q: queue.Queue[Any] = queue.Queue(maxsize=depth)
+    done = object()
+    failure: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            for item in items:
+                q.put(transform(item) if transform else item)
+        except BaseException as exc:  # handed to the consumer below
+            failure.append(exc)
+        finally:
+            q.put(done)
+
+    threading.Thread(target=work, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is done:
+            if failure:
+                raise failure[0]
+            return
+        yield item
 
 
 def read_frame(path: str | Path, index: int) -> NDArray:

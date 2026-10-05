@@ -11,6 +11,7 @@ import json
 import tempfile
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -19,7 +20,7 @@ import cv2
 import numpy as np
 
 from boxing_analytics.mesh4d.seeding import Seed, auto_seed, detect_roles
-from boxing_analytics.mesh4d.video_io import VideoInfo, iter_frames
+from boxing_analytics.mesh4d.video_io import VideoInfo, iter_frames, prefetch
 
 NDArray = np.ndarray[Any, Any]
 LogFn = Callable[[str], None]
@@ -129,12 +130,21 @@ class MaskStore:
 def _write_jpegs(
     video: VideoInfo, start: int, stop: int, directory: Path, scale: float
 ) -> list[int]:
-    frames = []
+    frames: list[int] = []
     size = (int(round(video.width * scale)), int(round(video.height * scale)))
-    for local, (index, frame) in enumerate(iter_frames(video.path, start, stop)):
+
+    def save(local: int, frame: NDArray) -> None:
         small = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
         cv2.imwrite(str(directory / f"{local:05d}.jpg"), small, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        frames.append(index)
+
+    # Decode in one thread, resize and JPEG-encode on several (OpenCV releases the GIL).
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = []
+        for local, (index, frame) in enumerate(prefetch(iter_frames(video.path, start, stop))):
+            jobs.append(pool.submit(save, local, frame))
+            frames.append(index)
+        for job in jobs:
+            job.result()
     return frames
 
 

@@ -66,8 +66,9 @@ if [ "${#ROUND_A[@]}" -eq 0 ]; then
   else for i in "${!files[@]}"; do ROUND_A[clip$((i + 1))]="${files[$i]}"; done; fi
 fi
 
-for key in $(printf '%s\n' "${!ROUND_A[@]}" | sort -V); do
-  run_dir="runs/$SESSION/$key"
+process_round() {
+  local key=$1
+  local run_dir="runs/$SESSION/$key" dest r
   args=(--run-dir "$run_dir" --video-a "${ROUND_A[$key]}" --start-s 0 --duration-s 0 --roles red,blue --seed-scan-s 20)
   [ -n "${ROUND_B[$key]:-}" ] && args+=(--video-b "${ROUND_B[$key]}")
   log "Round $key: $(basename "${ROUND_A[$key]}")${ROUND_B[$key]:+ + $(basename "${ROUND_B[$key]}")}"
@@ -98,8 +99,21 @@ for key in $(printf '%s\n' "${!ROUND_A[@]}" | sort -V); do
     python -m boxing_analytics.mesh4d.worker publish "$run_dir" --title "$SESSION, round ${key#r}" \
       || echo "!! publishing $key to the dashboard failed; results stay in $dest"
   fi
-done
+}
 
+# Rounds run side by side, as many as the GPU memory and CPU cores allow.
+SLOTS="${SLOTS:-$(python - <<'PY'
+from boxing_analytics.mesh4d.worker import auto_slots, system_status
+print(auto_slots(system_status()))
+PY
+)}"
+log "Processing $(printf '%s\n' "${!ROUND_A[@]}" | wc -l) round(s), $SLOTS at a time"
+for key in $(printf '%s\n' "${!ROUND_A[@]}" | sort -V); do
+  while [ "$(jobs -rp | wc -l)" -ge "$SLOTS" ]; do wait -n || true; done
+  process_round "$key" > "$WORK/sessions/$SESSION/$key.log" 2>&1 &
+  echo "  round $key started (log: $WORK/sessions/$SESSION/$key.log)"
+done
+wait
 log "Done. Results in $OUT"
 du -sh "$OUT"/*
 echo "Download to the Mac:  scp -r -i <key.pem> $(whoami)@<this-machine-ip>:$OUT ~/Downloads/"
