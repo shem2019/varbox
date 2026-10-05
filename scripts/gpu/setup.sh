@@ -74,6 +74,8 @@ if ! python -c "import detectron2" 2>/dev/null; then
   $PIP --no-build-isolation --no-deps "git+https://github.com/facebookresearch/detectron2.git@a1ce2f9"
 fi
 python -c "import moge" 2>/dev/null || $PIP "git+https://github.com/microsoft/MoGe.git"
+# MoGe pulls the newest huggingface_hub; transformers 4.x (VideoMAE) needs < 1.0.
+$PIP "huggingface_hub>=0.34,<1.0"
 
 log "Model downloads (gated: facebook/sam-3d-body-dinov3)"
 if ! python - <<'PY'
