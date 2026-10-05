@@ -260,6 +260,27 @@ function send_storage_file(string $rel, bool $download = false): never
     exit;
 }
 
+/** Asset URL fingerprinted by content, so browsers fetch a file again the moment it changes. */
+function asset(string $file): string
+{
+    static $cache = [];
+    if (!isset($cache[$file])) {
+        $path = SITE_DIR . '/assets/' . $file;
+        $cache[$file] = '/assets/' . $file . '?v=' . (is_file($path) ? substr(md5_file($path), 0, 10) : VARBOX_VERSION);
+    }
+    return $cache[$file];
+}
+
+/** Import map pinning the dashboard's modules to their fingerprinted URLs. */
+function module_import_map(): string
+{
+    $map = [];
+    foreach (['app.js', 'layers.js', 'viewer4d.js', 'meshdata.js'] as $file) {
+        $map['/assets/' . $file] = asset($file);
+    }
+    return '<script type="importmap">' . json_encode(['imports' => $map], JSON_UNESCAPED_SLASHES) . '</script>';
+}
+
 function e(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');

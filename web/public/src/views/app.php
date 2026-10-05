@@ -6,15 +6,16 @@
 <title>VAR Box</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="/assets/varbox.css?v=<?= VARBOX_VERSION ?>">
-<link rel="stylesheet" href="/assets/app.css?v=<?= VARBOX_VERSION ?>">
+<link rel="stylesheet" href="<?= asset('varbox.css') ?>">
+<link rel="stylesheet" href="<?= asset('app.css') ?>">
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <script>
   try { const t = localStorage.getItem('varbox-theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js" defer></script>
-<script type="module" src="/assets/app.js?v=<?= VARBOX_VERSION ?>"></script>
+<?= module_import_map() ?>
+<script type="module" src="<?= asset('app.js') ?>"></script>
 </head>
 <body>
 <div class="shell">

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Page moved · VAR Box</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800&family=IBM+Plex+Sans:wght@400;600&display=swap">
-<link rel="stylesheet" href="/assets/varbox.css?v=<?= VARBOX_VERSION ?>">
+<link rel="stylesheet" href="<?= asset('varbox.css') ?>">
 </head>
 <body style="min-height:100vh;display:grid;place-items:center;padding:20px">
   <div style="display:grid;gap:14px;text-align:center;max-width:28em">

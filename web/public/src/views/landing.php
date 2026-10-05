@@ -7,7 +7,7 @@
 <meta name="description" content="VAR Box turns two phone cameras into a 3D replay of both boxers, with every punch timed, sided and classified for the judges' review.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="/assets/varbox.css?v=<?= VARBOX_VERSION ?>">
+<link rel="stylesheet" href="<?= asset('varbox.css') ?>">
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <style>
   .wrap { max-width: 1160px; margin: 0 auto; padding-inline: 20px; }

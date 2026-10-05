@@ -8,7 +8,7 @@
 <title><?= e($title) ?></title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="/assets/varbox.css?v=<?= VARBOX_VERSION ?>">
+<link rel="stylesheet" href="<?= asset('varbox.css') ?>">
 <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
 <style>
   body { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; }

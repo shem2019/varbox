@@ -52,6 +52,7 @@ if ($view === '404') {
     http_response_code(404);
 }
 header('Content-Type: text/html; charset=utf-8');
+header('Cache-Control: no-cache');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: same-origin');
 require __DIR__ . '/src/views/' . $view . '.php';
