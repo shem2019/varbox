@@ -34,8 +34,10 @@ class BodyConfig:
     repo_dir: str = os.environ.get("SAM3D_BODY_DIR", "../sam-3d-body")
     hf_repo_id: str = "facebook/sam-3d-body-dinov3"
     device: str = "cuda"
-    inference_type: str = "full"
-    use_mask: bool = True
+    # Gloves hide the hands, so the separate hand decoder adds cost without useful detail.
+    inference_type: str = "body"
+    # The released checkpoints ignore mask prompts; boxes come from the SAM 2.1 masks anyway.
+    use_mask: bool = False
     box_pad: float = 0.08
     chunk_frames: int = 250
     focal_samples: int = 6
@@ -122,6 +124,8 @@ class BodyRunner:
         self.config = config
         self.log = log
         self.torch = torch
+        # The estimator empties the CUDA cache on every image, which stalls a long sequence.
+        torch.cuda.empty_cache = lambda: None
         estimator_cls, load_hf, fov_cls = _import_sam3d(config.repo_dir)
         with _Quiet():
             model, model_cfg = load_hf(config.hf_repo_id, device=config.device)
@@ -243,7 +247,7 @@ class BodyRunner:
                     )
                     for r in present
                 ]
-                full_masks = [
+                full_masks = [] if not self.config.use_mask else [
                     cv2.resize(
                         entries[r][1].astype(np.uint8),
                         (video.width, video.height),

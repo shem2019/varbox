@@ -197,7 +197,7 @@ def run(args: argparse.Namespace) -> int:
                         hf_repo_id=args.hf_repo,
                         device=args.device,
                         inference_type=args.inference_type,
-                        use_mask=not args.no_mask_prompt,
+                        use_mask=args.mask_prompt,
                     ),
                     log,
                 )
@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--mask-max-side", type=int, default=1024)
     r.add_argument("--sam3d-dir", default=os.environ.get("SAM3D_BODY_DIR", "../sam-3d-body"))
     r.add_argument("--hf-repo", default="facebook/sam-3d-body-dinov3")
-    r.add_argument("--inference-type", default="full", help="SAM 3D Body decoder: full | body")
+    r.add_argument("--inference-type", default="body", help="SAM 3D Body decoder: body | full")
     r.add_argument(
         "--no-mask-prompt", action="store_true", help="prompt SAM 3D Body with boxes only"
     )
