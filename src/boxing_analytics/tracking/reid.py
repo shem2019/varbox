@@ -103,7 +103,9 @@ class HandcraftedReIDEmbedder:
 class TorchvisionReIDEmbedder:
     """Feature extractor backed by lightweight torchvision classification backbones."""
 
-    def __init__(self, model_name: str = "mobilenet_v3_small", device: str = "auto", image_size: int = 160):
+    def __init__(
+        self, model_name: str = "mobilenet_v3_small", device: str = "auto", image_size: int = 160
+    ):
         import torch
         from torchvision import models
 
@@ -130,7 +132,7 @@ class TorchvisionReIDEmbedder:
 
         self._model = model.eval().to(self._device)
 
-    def _preprocess(self, crop: FrameArray):
+    def _preprocess(self, crop: FrameArray) -> Any:
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         patch = cv2.resize(rgb, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
         tensor = self._torch.from_numpy(patch).to(self._device, dtype=self._torch.float32)
@@ -139,12 +141,12 @@ class TorchvisionReIDEmbedder:
         std = self._torch.tensor(_IMAGENET_STD, device=self._device).view(1, 3, 1, 1)
         return (tensor - mean) / std
 
-    def _mobilenet_forward(self, tensor):
+    def _mobilenet_forward(self, tensor: Any) -> Any:
         feats = self._model.features(tensor)
         pooled = self._model.avgpool(feats)
         return self._torch.flatten(pooled, 1)
 
-    def _resnet_forward(self, tensor):
+    def _resnet_forward(self, tensor: Any) -> Any:
         model = self._model
         x = model.conv1(tensor)
         x = model.bn1(x)
@@ -169,7 +171,9 @@ class TorchvisionReIDEmbedder:
 class TorchreidOSNetEmbedder:
     """OSNet-AIN person ReID inference loaded directly from Torchreid model sources."""
 
-    def __init__(self, model_name: str = "osnet_ain_x1_0", device: str = "auto", image_size: int = 256):
+    def __init__(
+        self, model_name: str = "osnet_ain_x1_0", device: str = "auto", image_size: int = 256
+    ):
         import torch
 
         if model_name not in _TORCHREID_OSNET_MODELS:
@@ -195,9 +199,11 @@ class TorchreidOSNetEmbedder:
             loss="softmax",
         )
         self._model = model.eval().to(self._device)
-        self.embedding_dim = int(getattr(model, "feature_dim", self.embedding_dim) or self.embedding_dim)
+        self.embedding_dim = int(
+            getattr(model, "feature_dim", self.embedding_dim) or self.embedding_dim
+        )
 
-    def _preprocess(self, crop: FrameArray):
+    def _preprocess(self, crop: FrameArray) -> Any:
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         patch = cv2.resize(
             rgb,

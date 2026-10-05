@@ -129,7 +129,7 @@ def render_overlay(
     first = next(iter_frames(video_path, start, start + 1))[1]
     h, w = first.shape[:2]
     raw_path = out_path.with_suffix(".raw.mp4")
-    writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter_fourcc(*"mp4v"), scene.fps, (w, h))
+    writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter.fourcc(*"mp4v"), scene.fps, (w, h))
     flashes: dict[int, list[dict[str, Any]]] = {}
     for e in events:
         if e.get("contact_frame") is not None:
@@ -181,7 +181,8 @@ def render_overlay(
                 c = ROLE_RGB.get(r, (255, 255, 255))
                 lines.append(
                     (
-                        f"{r.upper():7s} landed {counts[r]['landed']:3d} / thrown {counts[r]['thrown']:3d}",
+                        f"{r.upper():7s} landed {counts[r]['landed']:3d} "
+                        f"/ thrown {counts[r]['thrown']:3d}",
                         (c[2], c[1], c[0]),
                     )
                 )
@@ -227,7 +228,7 @@ def render_isolated(
     f = 1.2 * w
     k = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1.0]])
     raw_path = out_path.with_suffix(".raw.mp4")
-    writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter_fourcc(*"mp4v"), scene.fps, (w, h))
+    writer = cv2.VideoWriter(str(raw_path), cv2.VideoWriter.fourcc(*"mp4v"), scene.fps, (w, h))
     valid = scene.valid[role]
     pelvis = 0.5 * (scene.kp3d[role][:, 9] + scene.kp3d[role][:, 10])
     centre = pelvis[valid].mean(axis=0) if valid.any() else np.zeros(3)

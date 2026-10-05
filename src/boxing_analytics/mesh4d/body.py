@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -59,9 +59,9 @@ def _import_sam3d(repo_dir: str) -> tuple[Any, Any, Any]:
     return SAM3DBodyEstimator, load_sam_3d_body_hf, FOVEstimator
 
 
-class _Quiet(contextlib.redirect_stdout):
-    def __init__(self) -> None:
-        super().__init__(io.StringIO())
+def _quiet() -> contextlib.redirect_stdout[io.StringIO]:
+    """Silence the estimator's per-image prints."""
+    return contextlib.redirect_stdout(io.StringIO())
 
 
 def _to_np(value: Any) -> NDArray:
@@ -127,7 +127,7 @@ class BodyRunner:
         # The estimator empties the CUDA cache on every image, which stalls a long sequence.
         torch.cuda.empty_cache = lambda: None
         estimator_cls, load_hf, fov_cls = _import_sam3d(config.repo_dir)
-        with _Quiet():
+        with _quiet():
             model, model_cfg = load_hf(config.hf_repo_id, device=config.device)
             fov = fov_cls(name="moge2", device=config.device) if fov_cls is not None else None
         self.estimator = estimator_cls(
@@ -177,7 +177,7 @@ class BodyRunner:
                 continue
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             box = _padded_box(np.asarray(boxes[0]), self.config.box_pad, video.width, video.height)
-            with _Quiet():
+            with _quiet():
                 out = self.estimator.process_one_image(
                     rgb, bboxes=box[None], inference_type=self.config.inference_type
                 )
@@ -195,6 +195,7 @@ class BodyRunner:
             self.intrinsics = k.astype(np.float64)
         # Drop the estimator's FOV model: intrinsics are fixed from here on.
         self.estimator.fov_estimator = None
+        assert self.intrinsics is not None
         return self.intrinsics
 
     def _run_frame(
@@ -207,7 +208,7 @@ class BodyRunner:
             kwargs["use_mask"] = True
         if self.cam_int is not None:
             kwargs["cam_int"] = self.cam_int.clone()
-        with _Quiet():
+        with _quiet():
             outputs = self.estimator.process_one_image(rgb, **kwargs)
         # SAM 3D Body returns one result per input box, in input order.
         result: dict[str, dict[str, Any]] = {}
@@ -247,21 +248,26 @@ class BodyRunner:
                     )
                     for r in present
                 ]
-                full_masks = [] if not self.config.use_mask else [
-                    cv2.resize(
-                        entries[r][1].astype(np.uint8),
-                        (video.width, video.height),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    for r in present
-                ]
+                full_masks: list[NDArray] = []
+                if self.config.use_mask:
+                    for r in present:
+                        low_res = entries[r][1]
+                        assert low_res is not None  # present roles always carry a mask
+                        full_masks.append(
+                            cv2.resize(
+                                low_res.astype(np.uint8),
+                                (video.width, video.height),
+                                interpolation=cv2.INTER_NEAREST,
+                            )
+                        )
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 people = self._run_frame(rgb, present, boxes, full_masks)
                 for role, person in people.items():
                     if self.convention is None:
                         self.convention, err = pick_convention(person, self.intrinsics)
                         self.log(
-                            f"body: output convention '{self.convention}' (reprojection {err:.1f}px)"
+                            f"body: output convention '{self.convention}' "
+                            f"(reprojection {err:.1f}px)"
                         )
                     cam_t = _to_np(person["pred_cam_t"]).reshape(3)
                     verts = _apply_convention(
@@ -288,12 +294,13 @@ class BodyRunner:
                     done = index - start + 1
                     rate = done / max(time.monotonic() - started, 1e-6)
                     self.log(
-                        f"body: frame {index} ({rate:.2f} fps, eta {(stop - index) / max(rate, 1e-6):.0f}s)"
+                        f"body: frame {index} ({rate:.2f} fps, "
+                        f"eta {(stop - index) / max(rate, 1e-6):.0f}s)"
                     )
             for role in roles:
                 for key, value in arrays[role].items():
                     store[f"{role}_{key}"] = value
-            np.savez(path, **store)
+            np.savez(path, **cast(dict[str, Any], store))
         meta = {
             "roles": roles,
             "intrinsics": self.intrinsics.tolist(),

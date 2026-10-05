@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import cv2
 import numpy as np
@@ -58,7 +58,7 @@ class MaskStore:
         self.directory = directory
         meta = json.loads((directory / "meta.json").read_text(encoding="utf-8"))
         self.roles: list[str] = meta["roles"]
-        self.shape: tuple[int, int] = tuple(meta["mask_shape"])  # type: ignore[assignment]
+        self.shape: tuple[int, int] = tuple(meta["mask_shape"])
         self.scale: float = float(meta["scale"])
         self.frames: dict[int, tuple[Path, int]] = {}
         for chunk in sorted(directory.glob("chunk_*.npz")):
@@ -131,7 +131,7 @@ def track_masks(
     log: LogFn = print,
 ) -> None:
     import torch
-    from sam2.build_sam import build_sam2_video_predictor  # type: ignore[import-untyped]
+    from sam2.build_sam import build_sam2_video_predictor
 
     out_dir.mkdir(parents=True, exist_ok=True)
     roles = list(seeds.keys())
@@ -224,7 +224,10 @@ def track_masks(
                     r: np.zeros((n, (mask_shape[0] * mask_shape[1] + 7) // 8), dtype=np.uint8)
                     for r in roles
                 }
-                def consume(stream: Any) -> None:
+
+                def consume(
+                    stream: Any, boxes: dict[str, NDArray], bits: dict[str, NDArray]
+                ) -> None:
                     for local, ids, logits in stream:
                         for k, obj in enumerate(ids):
                             role = id_roles[int(obj)]
@@ -237,7 +240,7 @@ def track_masks(
                             boxes[role][local] = np.asarray(b, dtype=np.float32) / scale
                             bits[role][local] = pack(mask)
 
-                consume(predictor.propagate_in_video(state))
+                consume(predictor.propagate_in_video(state), boxes, bits)
                 if chunk_index == 0:
                     # Seeds may sit a little after the window start: fill those frames backwards.
                     first_seed = min(max(0, seeds[r].frame_index - chunk_start) for r in roles)
@@ -245,7 +248,9 @@ def track_masks(
                         consume(
                             predictor.propagate_in_video(
                                 state, start_frame_idx=first_seed, reverse=True
-                            )
+                            ),
+                            boxes,
+                            bits,
                         )
                 predictor.reset_state(state)
         for role in roles:
@@ -261,7 +266,7 @@ def track_masks(
         # Chunks overlap by one frame; drop the duplicate first frame after chunk 0.
         if chunk_index > 0:
             payload = {k: v[1:] for k, v in payload.items()}
-        np.savez_compressed(chunk_path, **payload)
+        np.savez_compressed(chunk_path, **cast(dict[str, Any], payload))
         coverage = {r: float(np.mean(~np.isnan(boxes[r][:, 0]))) for r in roles}
         elapsed = time.monotonic() - started
         done = chunk_stop - start

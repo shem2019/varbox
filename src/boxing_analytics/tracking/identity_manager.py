@@ -10,7 +10,6 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from color_signature import compute_color_scores
 from boxing_analytics.tracking.identity_hmm import (
     IdentityHMMConfig,
     TrackObservation,
@@ -21,6 +20,7 @@ from boxing_analytics.tracking.tracklet_stitcher import (
     TrackletStitcherConfig,
     TwoFighterTrackletStitcher,
 )
+from color_signature import compute_color_scores
 
 FloatArray = NDArray[np.float32]
 FrameArray = NDArray[np.uint8]
@@ -625,7 +625,7 @@ class IdentityManager:
             "BLUE": round(self._role_confidence["BLUE"], 3),
         }
 
-    def tracking_stats(self) -> dict[str, dict[str, int | float]]:
+    def tracking_stats(self) -> dict[str, dict[str, int | float | str]]:
         last_debug = self._hypothesis_log[-1] if self._hypothesis_log else {}
         return {
             "RED": {

@@ -37,8 +37,10 @@ def event_label(event: dict[str, Any]) -> str:
     return str(event["outcome"])
 
 
-def match(gt: list[dict[str, Any]], events: list[dict[str, Any]], slack: int = 15) -> list[tuple[int, int]]:
-    """One-to-one time matching: an event matches a label when it falls inside its frames ± slack."""
+def match(
+    gt: list[dict[str, Any]], events: list[dict[str, Any]], slack: int = 15
+) -> list[tuple[int, int]]:
+    """One-to-one time matching: an event matches a label inside its frames ± slack."""
     pairs = []
     for gi, g in enumerate(gt):
         mid = 0.5 * (g["start"] + g["end"])

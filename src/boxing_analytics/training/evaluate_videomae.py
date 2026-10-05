@@ -34,7 +34,7 @@ def evaluate(
     if not local_model.is_dir():
         raise FileNotFoundError(f"Local VideoMAE model not found: {local_model}")
     config = AutoConfig.from_pretrained(local_model, local_files_only=True)
-    processor = AutoImageProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+    processor = AutoImageProcessor.from_pretrained(
         local_model, local_files_only=True, use_fast=False
     )
     model = AutoModelForVideoClassification.from_pretrained(local_model, local_files_only=True).to(

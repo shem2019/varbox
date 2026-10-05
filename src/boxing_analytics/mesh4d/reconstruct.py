@@ -20,7 +20,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -75,7 +75,7 @@ class ViewScene:
             payload[f"{r}_valid"] = self.valid[r]
             payload[f"{r}_occlusion"] = self.occlusion[r].astype(np.float32)
             payload[f"{r}_scale_k"] = self.scale_k[r].astype(np.float32)
-        np.savez(path, **payload)
+        np.savez(path, **cast(dict[str, Any], payload))
         path.with_suffix(".json").write_text(
             json.dumps(
                 {"roles": self.roles, "fps": self.fps, "plane_cam": self.plane_cam.to_dict()},
@@ -154,9 +154,8 @@ def build_view_scene(
         verts[r], kps[r], valid[r], scale_k[r] = v, kp, ok, k
         if ok.any():
             pelvis_samples.append(0.5 * (kp[ok, KP["left_hip"]] + kp[ok, KP["right_hip"]]))
-        log(
-            f"world: {r} valid {ok.mean():.0%}, depth scale k median {np.median(k[ok]) if ok.any() else 1:.3f}"
-        )
+        k_median = float(np.median(k[ok])) if ok.any() else 1.0
+        log(f"world: {r} valid {ok.mean():.0%}, depth scale k median {k_median:.3f}")
 
     anchor = (
         np.median(np.concatenate(pelvis_samples), axis=0)
@@ -247,7 +246,10 @@ def align_views(
             continue
         stride = max(1, len(src) // 400)
         s, rot, t, inl = ransac_umeyama(src[::stride], dst[::stride])
-        res = [np.median(np.linalg.norm(s * x @ rot.T + t - y, axis=1)) for x, y in zip(src, dst, strict=False)]
+        res = [
+            np.median(np.linalg.norm(s * x @ rot.T + t - y, axis=1))
+            for x, y in zip(src, dst, strict=False)
+        ]
         result = FusionResult(
             s,
             rot,
@@ -262,7 +264,7 @@ def align_views(
             f"{result.inlier_frames}/{result.paired_frames} frames within 15 cm, scale {s:.3f}"
         )
         # Two boxers facing each other are nearly symmetric under a half turn, so the swapped
-        # assignment can fit almost as well. Colour seeding is trusted unless the swap fits far better.
+        # assignment can fit almost as well. Colour seeding wins unless the swap fits far better.
         if best is None or result.median_residual_m < 0.6 * best.median_residual_m:
             best = result
     if best is None:

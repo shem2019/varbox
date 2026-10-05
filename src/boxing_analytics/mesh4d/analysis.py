@@ -1,4 +1,4 @@
-"""Contact analysis over a 4D scene and the files a reviewer reads: per-frame JSONL, events, summary."""
+"""Contact analysis over a 4D scene, and the reviewer files: per-frame JSONL, events, summary."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def analyse(
         counts = {reg: int(np.sum(labels[r] == k)) for k, reg in enumerate(REGIONS)}
         log(f"contact: {r} region labels from frame {int(scene.frames[i])}: {counts}")
     contacts = compute_frame_contacts(
-        fighters,  # type: ignore[arg-type]
+        fighters,
         {r: scene.verts[r] for r in fighters},
         {r: scene.kp3d[r] for r in fighters},
         {r: scene.valid[r] for r in fighters},
@@ -61,7 +61,7 @@ def analyse(
         scene.fps,
         cfg,
     )
-    events = detect_punches(fighters, contacts, scene.fps, cfg, occlusion=scene.occlusion)  # type: ignore[arg-type]
+    events = detect_punches(fighters, contacts, scene.fps, cfg, occlusion=scene.occlusion)
     # Report frames in source-video numbering.
     offset = int(scene.frames[0])
     for e in events:

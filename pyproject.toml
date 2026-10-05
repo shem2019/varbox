@@ -103,6 +103,43 @@ exclude = [
   "^assets/",
 ]
 
+# Legacy prototype modules at the repository root are untyped; the typed package only calls them.
+[[tool.mypy.overrides]]
+module = [
+  "multi_person_tracker",
+  "mediapipe_compat",
+  "color_signature",
+  "boxer_registry",
+  "participant_manager",
+  "identity_bootstrap",
+  "punch_detector",
+  "video_processor",
+  "config",
+  "runtime_profile",
+  "opencv_guard",
+]
+follow_imports = "skip"
+
+# Heavy ML libraries without usable type information. CI installs only some of them, so they are
+# treated as untyped everywhere to keep local and CI results identical.
+[[tool.mypy.overrides]]
+module = [
+  "transformers", "transformers.*",
+  "sam2", "sam2.*",
+  "ultralytics", "ultralytics.*",
+  "torchvision", "torchvision.*",
+  "mediapipe", "mediapipe.*",
+  "huggingface_hub", "huggingface_hub.*",
+  "torchreid", "torchreid.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+# numpy's stubs type most array arithmetic as Any; flagging every such return adds only noise.
+[[tool.mypy.overrides]]
+module = ["boxing_analytics.mesh4d.*"]
+warn_return_any = false
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

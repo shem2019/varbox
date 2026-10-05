@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any
 
 import cv2
 
@@ -21,25 +21,25 @@ class GuidedSystemCheckResult:
     summary: str
     checks: tuple[SystemCheckItem, ...]
     tracker_mode: str
-    tracker_issue: Optional[str]
+    tracker_issue: str | None
     frames_scanned: int
     frames_with_track_ids: int
     frames_with_required_roles: int
     required_roles: tuple[str, ...]
-    lock_status: dict[str, Optional[int]]
+    lock_status: dict[str, int | None]
 
 
-def _required_roles(manual_seeds: Optional[dict]) -> tuple[str, ...]:
+def _required_roles(manual_seeds: dict[str, Any] | None) -> tuple[str, ...]:
     seeds = manual_seeds if isinstance(manual_seeds, dict) else {}
     return tuple(role for role in ("RED", "BLUE") if isinstance(seeds.get(role), dict))
 
 
 def summarize_guided_system_check(
     *,
-    tracker_diagnostics: dict,
-    lock_status: Optional[dict],
-    manual_seeds: Optional[dict],
-    ring_roi: Optional[dict],
+    tracker_diagnostics: dict[str, Any],
+    lock_status: dict[str, Any] | None,
+    manual_seeds: dict[str, Any] | None,
+    ring_roi: dict[str, Any] | None,
     frames_scanned: int,
     frames_with_track_ids: int,
     frames_with_required_roles: int,
@@ -63,23 +63,29 @@ def summarize_guided_system_check(
         SystemCheckItem(
             "Ring ROI",
             ring_ok,
-            "Manual polygon available for ring-gated detection."
-            if ring_ok
-            else "Manual ring ROI was not captured.",
+            (
+                "Manual polygon available for ring-gated detection."
+                if ring_ok
+                else "Manual ring ROI was not captured."
+            ),
         ),
         SystemCheckItem(
             "Boxer Labels",
             seeds_ok,
-            "RED and BLUE annotations are present."
-            if seeds_ok
-            else "RED and BLUE annotations are both required.",
+            (
+                "RED and BLUE annotations are present."
+                if seeds_ok
+                else "RED and BLUE annotations are both required."
+            ),
         ),
         SystemCheckItem(
             "Tracker IDs",
             tracker_ok,
-            "Ultralytics tracker is ready to emit live track IDs."
-            if tracker_ok
-            else str(tracker_diagnostics.get("issue") or "Tracker is not ready."),
+            (
+                "Ultralytics tracker is ready to emit live track IDs."
+                if tracker_ok
+                else str(tracker_diagnostics.get("issue") or "Tracker is not ready.")
+            ),
         ),
         SystemCheckItem(
             "Role Locks",
@@ -94,7 +100,8 @@ def summarize_guided_system_check(
             "Verification Frames",
             evidence_ok,
             (
-                f"Verified {frames_with_required_roles} frames with both fighters live inside the tracked window."
+                f"Verified {frames_with_required_roles} frames with both fighters live "
+                "inside the tracked window."
                 if evidence_ok
                 else (
                     f"Only verified {frames_with_required_roles} frame(s); "
@@ -143,8 +150,8 @@ def run_guided_system_check(
     video_path: str,
     *,
     backend: str,
-    ring_roi: Optional[dict],
-    manual_seeds: Optional[dict],
+    ring_roi: dict[str, Any] | None,
+    manual_seeds: dict[str, Any] | None,
     min_required_role_frames: int = 3,
 ) -> GuidedSystemCheckResult:
     try:
@@ -229,7 +236,8 @@ def run_guided_system_check(
 
             live_roles = tracker.live_role_status()
             if required_roles and all(
-                live_roles.get(role) in poses and live_roles.get(role) is not None for role in required_roles
+                live_roles.get(role) in poses and live_roles.get(role) is not None
+                for role in required_roles
             ):
                 frames_with_required_roles += 1
                 locked = tracker.lock_status()

@@ -1,4 +1,4 @@
-"""End-to-end 4D boxing analysis: masks -> meshes -> floor-anchored 4D -> fusion -> contact -> outputs.
+"""End-to-end 4D boxing analysis: masks, meshes, floor-anchored 4D, fusion, contact, outputs.
 
 Every stage caches its results in the run directory, so a crashed or interrupted run resumes
 where it stopped. Example (one camera, 30 s from the 60 s mark):
@@ -108,7 +108,8 @@ def run(args: argparse.Namespace) -> int:
         stop_b = map_frame(stop_a, info_a.fps, info_b.fps, sync.offset_s)
         if start_b < 0 or stop_b > info_b.frame_count:
             log(
-                f"sync: window falls outside camera B ({start_b}-{stop_b} of {info_b.frame_count}); single view only"
+                f"sync: window falls outside camera B ({start_b}-{stop_b} of "
+                f"{info_b.frame_count}); single view only"
             )
         else:
             views["B"] = {"info": info_b, "start": start_b, "stop": stop_b, "seeds": args.seed_b}
@@ -129,11 +130,11 @@ def run(args: argparse.Namespace) -> int:
     from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks
     from boxing_analytics.mesh4d.seeding import (
         Seed,
-        scan_for_seed,
         draw_seeds,
         load_seeds,
         parse_manual_seeds,
         save_seeds,
+        scan_for_seed,
     )
 
     mask_cfg = MaskConfig(
@@ -169,13 +170,15 @@ def run(args: argparse.Namespace) -> int:
             missing = [r for r in roles if r not in seeds and r != "referee"]
             if missing:
                 raise RuntimeError(
-                    f"view {name}: could not seed {missing}; pass --seed-{name.lower()} role=x1,y1,x2,y2"
+                    f"view {name}: could not seed {missing}; "
+                    f"pass --seed-{name.lower()} role=x1,y1,x2,y2"
                 )
             save_seeds(seeds_path, seeds)
             cv2.imwrite(str(vdir / "seed_preview.jpg"), draw_seeds(frame, seeds))
-            log(
-                f"seed {name}: {', '.join(f'{r}={tuple(round(v) for v in s.box)} ({s.source})' for r, s in seeds.items())}"
+            described = ", ".join(
+                f"{r}={tuple(round(v) for v in s.box)} ({s.source})" for r, s in seeds.items()
             )
+            log(f"seed {name}: {described}")
         if seeds_path.exists():
             # Mask tracking can only reach back within its first chunk; footage before a late
             # seed frame is pre-round anyway, so the window starts at the seed.
@@ -185,7 +188,9 @@ def run(args: argparse.Namespace) -> int:
                 view["start"] = first_seed
                 if name == "A":
                     run_meta["window_a"] = [first_seed, view["stop"]]
-                    (run_dir / "run.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+                    (run_dir / "run.json").write_text(
+                        json.dumps(run_meta, indent=2), encoding="utf-8"
+                    )
         if "masks" in only:
             track_masks(
                 info,
@@ -252,11 +257,10 @@ def run(args: argparse.Namespace) -> int:
         from boxing_analytics.mesh4d.sync import map_frame
 
         a, b = scenes["A"], scenes["B"]
+        fps_a, fps_b = views["A"]["info"].fps, views["B"]["info"].fps
+        offset = float(sync_meta["offset_s"])  # type: ignore[index]
         b_index = np.array(
-            [
-                map_frame(int(f), views["A"]["info"].fps, views["B"]["info"].fps, sync_meta["offset_s"]) - views["B"]["start"]  # type: ignore[index]
-                for f in a.frames
-            ]
+            [map_frame(int(f), fps_a, fps_b, offset) - views["B"]["start"] for f in a.frames]
         )
         b_index[(b_index < 0) | (b_index >= b.frames.shape[0])] = -1
         fused_path = run_dir / "fused.npz"
@@ -268,7 +272,8 @@ def run(args: argparse.Namespace) -> int:
                 )
                 if fusion.median_residual_m > 0.25:
                     log(
-                        f"fuse: residual {fusion.median_residual_m:.2f} m is too high; keeping camera A alone"
+                        f"fuse: residual {fusion.median_residual_m:.2f} m is too high; "
+                        "keeping camera A alone"
                     )
                 else:
                     fuse_scenes(a, b, b_index, fusion).save(fused_path)
@@ -302,9 +307,15 @@ def run(args: argparse.Namespace) -> int:
 
         render_dir = run_dir / "render"
         render_dir.mkdir(exist_ok=True)
-        log(
-            f"render: {render_overlay(final, views['A']['info'].path, render_dir / 'overlay_A.mp4', events, device=args.device, log=log)}"
+        overlay_a = render_overlay(
+            final,
+            views["A"]["info"].path,
+            render_dir / "overlay_A.mp4",
+            events,
+            device=args.device,
+            log=log,
         )
+        log(f"render: {overlay_a}")
         if "B" in scenes:
             from boxing_analytics.mesh4d.sync import map_frame
 
@@ -313,15 +324,27 @@ def run(args: argparse.Namespace) -> int:
                 e2 = dict(e)
                 for k in ("start_frame", "peak_frame", "end_frame", "contact_frame"):
                     if e2.get(k) is not None:
-                        e2[k] = map_frame(int(e2[k]), views["A"]["info"].fps, views["B"]["info"].fps, sync_meta["offset_s"])  # type: ignore[index]
+                        e2[k] = map_frame(
+                            int(e2[k]),
+                            views["A"]["info"].fps,
+                            views["B"]["info"].fps,
+                            float(sync_meta["offset_s"]),  # type: ignore[index]
+                        )
                 events_b.append(e2)
-            log(
-                f"render: {render_overlay(scenes['B'], views['B']['info'].path, render_dir / 'overlay_B.mp4', events_b, device=args.device, log=log)}"
+            overlay_b = render_overlay(
+                scenes["B"],
+                views["B"]["info"].path,
+                render_dir / "overlay_B.mp4",
+                events_b,
+                device=args.device,
+                log=log,
             )
+            log(f"render: {overlay_b}")
         for role in final.roles:
-            log(
-                f"render: {render_isolated(final, role, render_dir / f'isolated_{role}.mp4', device=args.device, log=log)}"
+            iso = render_isolated(
+                final, role, render_dir / f"isolated_{role}.mp4", device=args.device, log=log
             )
+            log(f"render: {iso}")
 
     if "export" in only:
         from boxing_analytics.mesh4d.export import export_viewer
@@ -367,13 +390,22 @@ def combine(args: argparse.Namespace) -> int:
     scorer = VideoMAEScorer(args.model_dir, args.device)
     tol = ContactConfig.for_views(n_views).contact_tol_m
     combined = combine_events(
-        scene, events, meta["video_a"], scorer, mesh_weight=args.mesh_weight, contact_tol_m=tol, log=log
+        scene,
+        events,
+        meta["video_a"],
+        scorer,
+        mesh_weight=args.mesh_weight,
+        contact_tol_m=tol,
+        log=log,
     )
     out = run_dir / "report_combined"
     out.mkdir(exist_ok=True)
     (out / "events.json").write_text(json.dumps(combined, indent=2), encoding="utf-8")
     fighters = [r for r in ("red", "blue") if r in scene.roles]
-    tally = {r: {"thrown": 0, "landed_head": 0, "landed_torso": 0, "blocked": 0, "missed": 0} for r in fighters}
+    tally = {
+        r: {"thrown": 0, "landed_head": 0, "landed_torso": 0, "blocked": 0, "missed": 0}
+        for r in fighters
+    }
     for e in combined:
         row = tally[e["attacker"]]
         row["thrown"] += 1
@@ -393,7 +425,12 @@ def combine(args: argparse.Namespace) -> int:
         render_dir = run_dir / "render"
         render_dir.mkdir(exist_ok=True)
         render_overlay(
-            scene, meta["video_a"], render_dir / "overlay_A_combined.mp4", combined, device=args.device, log=log
+            scene,
+            meta["video_a"],
+            render_dir / "overlay_A_combined.mp4",
+            combined,
+            device=args.device,
+            log=log,
         )
         export_viewer(scene, contacts, combined, run_dir / "viewer_combined", summary=summary)
     log("combine: done")
@@ -405,8 +442,16 @@ def evaluate_runs(args: argparse.Namespace) -> int:
     from boxing_analytics.mesh4d.combine import OUTCOMES
     from boxing_analytics.mesh4d.olympic_eval import combine_reports, evaluate, load_ground_truth
 
-    variants: dict[str, list[dict[str, Any]]] = {"mesh_only": [], "videomae_only": [], "combined": []}
-    lines = ["| clip | method | labelled | matched | recall | hand | outcome (4 class) | landed/blocked/missed |", "|---|---|---|---|---|---|---|---|"]
+    variants: dict[str, list[dict[str, Any]]] = {
+        "mesh_only": [],
+        "videomae_only": [],
+        "combined": [],
+    }
+    lines = [
+        "| clip | method | labelled | matched | recall | hand | outcome (4 class) "
+        "| landed/blocked/missed |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for run in args.runs:
         run_dir = Path(run)
         meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -427,18 +472,24 @@ def evaluate_runs(args: argparse.Namespace) -> int:
             v["outcome"] = "landed" if label.startswith("landed") else label
             v["target"] = {"landed_head": "head", "landed_body": "torso"}.get(label)
             video_only.append(v)
-        for name, evs in (("mesh_only", mesh), ("videomae_only", video_only), ("combined", combined)):
+        for name, evs in (
+            ("mesh_only", mesh),
+            ("videomae_only", video_only),
+            ("combined", combined),
+        ):
             r = evaluate(gt, evs)
             variants[name].append(r)
             lines.append(
-                f"| {run_dir.name} | {name} | {r['labelled_punches']} | {r['matched']} | {r['recall']:.0%} | "
+                f"| {run_dir.name} | {name} | {r['labelled_punches']} | {r['matched']} "
+                f"| {r['recall']:.0%} | "
                 f"{r['hand_accuracy']:.0%} | {r['outcome_accuracy_4class']:.0%} | "
                 f"{r['outcome_accuracy_landed_blocked_missed']:.0%} |"
             )
     totals = {name: combine_reports(rs) for name, rs in variants.items() if rs}
     for name, r in totals.items():
         lines.append(
-            f"| **all** | **{name}** | {r['labelled_punches']} | {r['matched']} | {r['recall']:.0%} | "
+            f"| **all** | **{name}** | {r['labelled_punches']} | {r['matched']} "
+            f"| {r['recall']:.0%} | "
             f"{r['hand_accuracy']:.0%} | {r['outcome_accuracy_4class']:.0%} | "
             f"{r['outcome_accuracy_landed_blocked_missed']:.0%} |"
         )
@@ -467,7 +518,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--roles", default="red,blue", help="comma list from red,blue,referee")
     r.add_argument("--seed-a", action="append", help="manual seed for camera A: role=x1,y1,x2,y2")
     r.add_argument("--seed-b", action="append", help="manual seed for camera B: role=x1,y1,x2,y2")
-    r.add_argument("--seed-scan-s", type=float, default=3.0, help="seconds scanned for a clean seed frame")
+    r.add_argument(
+        "--seed-scan-s", type=float, default=3.0, help="seconds scanned for a clean seed frame"
+    )
     r.add_argument("--stages", help=f"comma list from {','.join(STAGES)} (default: all)")
     r.add_argument("--device", default="cuda")
     r.add_argument("--yolo-model", default="yolo11m-pose.pt")

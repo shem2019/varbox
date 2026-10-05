@@ -87,7 +87,7 @@ def decode_event_clip(
     times = uniform_frame_times(start, end, frame_count)
     indices = [max(0, min(total - 1, int(round(t * fps)))) for t in times]
     wanted = set(indices)
-    decoded: dict[int, NDArray] = {}
+    decoded: dict[int, Any] = {}
     cap.set(cv2.CAP_PROP_POS_FRAMES, min(indices))
     index = min(indices)
     while index <= max(indices):
@@ -99,13 +99,15 @@ def decode_event_clip(
         index += 1
     cap.release()
     frames = []
-    last = None
+    last: Any = None
     for idx in indices:
-        frame = decoded.get(idx, last)
-        if frame is None:
+        image: Any = decoded.get(idx, last)
+        if image is None:
             raise ValueError(f"could not decode frame {idx} of {video_path}")
-        last = frame
-        frames.append(cv2.cvtColor(crop_and_pad(frame, crop, output_size=image_size), cv2.COLOR_BGR2RGB))
+        last = image
+        frames.append(
+            cv2.cvtColor(crop_and_pad(image, crop, output_size=image_size), cv2.COLOR_BGR2RGB)
+        )
     return frames
 
 
@@ -115,9 +117,13 @@ class VideoMAEScorer:
 
         self.model_dir = model_dir
         self.device = device
-        self.processor = AutoImageProcessor.from_pretrained(model_dir, local_files_only=True, use_fast=False)
+        self.processor = AutoImageProcessor.from_pretrained(
+            model_dir, local_files_only=True, use_fast=False
+        )
         self.config = AutoConfig.from_pretrained(model_dir, local_files_only=True)
-        self.model = AutoModelForVideoClassification.from_pretrained(model_dir, local_files_only=True).to(device)
+        self.model = AutoModelForVideoClassification.from_pretrained(
+            model_dir, local_files_only=True
+        ).to(device)
         self.model.eval()
         self.id2label = {int(k): str(v) for k, v in self.config.id2label.items()}
         self.frame_count = int(getattr(self.config, "num_frames", 16) or 16)
@@ -134,7 +140,9 @@ class VideoMAEScorer:
             batch = clips[b : b + batch_size]
             pixel = torch.cat(
                 [
-                    self.processor(c, return_tensors="pt", do_resize=False, do_center_crop=False)["pixel_values"]
+                    self.processor(c, return_tensors="pt", do_resize=False, do_center_crop=False)[
+                        "pixel_values"
+                    ]
                     for c in batch
                 ]
             ).to(self.device)
@@ -165,10 +173,13 @@ def mesh_distribution(event: dict[str, Any], tol_m: float) -> dict[str, float]:
     return {k: max(1e-3, v / total) for k, v in raw.items()}
 
 
-def fuse(p_video: dict[str, float], p_mesh: dict[str, float], mesh_weight: float) -> dict[str, float]:
+def fuse(
+    p_video: dict[str, float], p_mesh: dict[str, float], mesh_weight: float
+) -> dict[str, float]:
     punch_mass = sum(p_video.get(k, 0.0) for k in OUTCOMES)
     logp = {
-        k: math.log(max(1e-6, p_video.get(k, 0.0) / max(punch_mass, 1e-6))) + mesh_weight * math.log(p_mesh[k])
+        k: math.log(max(1e-6, p_video.get(k, 0.0) / max(punch_mass, 1e-6)))
+        + mesh_weight * math.log(p_mesh[k])
         for k in OUTCOMES
     }
     m = max(logp.values())
@@ -221,5 +232,8 @@ def combine_events(
         if c["no_punch_probability"] > 0.6:
             c.setdefault("notes", []).append("classifier thinks this may not be a punch")
         combined.append(c)
-    log(f"combine: {len(combined)} events rescored with {Path(scorer.model_dir).name} (mesh weight {mesh_weight})")
+    log(
+        f"combine: {len(combined)} events rescored with {Path(scorer.model_dir).name} "
+        f"(mesh weight {mesh_weight})"
+    )
     return combined

@@ -135,7 +135,7 @@ class VideoMAETemporalStrikeClassifier:
             return
         from transformers import AutoConfig, AutoImageProcessor, AutoModelForVideoClassification
 
-        self._processor = AutoImageProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+        self._processor = AutoImageProcessor.from_pretrained(
             self.model_dir,
             local_files_only=True,
             use_fast=False,

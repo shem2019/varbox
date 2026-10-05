@@ -154,7 +154,7 @@ def train(
             f"VideoMAE checkpoint not found at {source_path}. "
             "Download it before running offline training."
         )
-    processor = AutoImageProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+    processor = AutoImageProcessor.from_pretrained(
         str(source_path),
         local_files_only=True,
         use_fast=False,

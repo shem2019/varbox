@@ -94,13 +94,17 @@ def colour_scores(patch: NDArray) -> dict[str, float]:
 _MODELS: dict[str, Any] = {}
 
 
-def detect_people(frame: NDArray, model_path: str, device: str) -> list[tuple[Box, float, NDArray]]:
-    from ultralytics import YOLO  # type: ignore[import-untyped]
+def detect_people(
+    frame: NDArray, model_path: str, device: str
+) -> list[tuple[Box, float, NDArray | None]]:
+    from ultralytics import YOLO
 
     if model_path not in _MODELS:
         _MODELS[model_path] = YOLO(model_path)
-    result = _MODELS[model_path].predict(frame, device=device, verbose=False, conf=0.3, classes=[0])[0]
-    people: list[tuple[Box, float, NDArray]] = []
+    result = _MODELS[model_path].predict(
+        frame, device=device, verbose=False, conf=0.3, classes=[0]
+    )[0]
+    people: list[tuple[Box, float, NDArray | None]] = []
     if result.boxes is None:
         return people
     boxes = result.boxes.xyxy.cpu().numpy()
@@ -110,7 +114,11 @@ def detect_people(frame: NDArray, model_path: str, device: str) -> list[tuple[Bo
         kps = result.keypoints.data.cpu().numpy()
     for i in range(boxes.shape[0]):
         people.append(
-            (tuple(float(v) for v in boxes[i]), float(confs[i]), None if kps is None else kps[i])
+            (
+                (float(boxes[i][0]), float(boxes[i][1]), float(boxes[i][2]), float(boxes[i][3])),
+                float(confs[i]),
+                None if kps is None else kps[i],
+            )
         )
     return people
 
@@ -195,7 +203,9 @@ def _assign(
         if best_i >= 0 and best_val > 0.02:
             used.add(best_i)
             box, sc = candidates[best_i]
-            seeds[role] = Seed(role, frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()})
+            seeds[role] = Seed(
+                role, frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()}
+            )
             quality += min(best_val, 0.3)
         else:
             quality -= 1.0
@@ -203,11 +213,18 @@ def _assign(
         remaining = [
             (i, c)
             for i, c in enumerate(candidates)
-            if i not in used and c[1]["torso_white"] > 0.12 and c[1]["red"] < 0.08 and c[1]["blue"] < 0.08
+            if i not in used
+            and c[1]["torso_white"] > 0.12
+            and c[1]["red"] < 0.08
+            and c[1]["blue"] < 0.08
         ]
         if remaining:
-            _, (box, sc) = max(remaining, key=lambda item: item[1][1]["torso_white"] + 0.2 * item[1][1]["area"])
-            seeds["referee"] = Seed("referee", frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()})
+            _, (box, sc) = max(
+                remaining, key=lambda item: item[1][1]["torso_white"] + 0.2 * item[1][1]["area"]
+            )
+            seeds["referee"] = Seed(
+                "referee", frame_index, box, "auto", {k: round(v, 4) for k, v in sc.items()}
+            )
             quality += 0.1
         else:
             quality -= 0.2
@@ -264,6 +281,6 @@ def save_seeds(path: Path, seeds: dict[str, Seed]) -> None:
 def load_seeds(path: Path) -> dict[str, Seed]:
     data = json.loads(path.read_text(encoding="utf-8"))
     return {
-        r: Seed(r, int(s["frame_index"]), tuple(s["box"]), s["source"], s.get("scores", {}))  # type: ignore[arg-type]
+        r: Seed(r, int(s["frame_index"]), tuple(s["box"]), s["source"], s.get("scores", {}))
         for r, s in data.items()
     }
