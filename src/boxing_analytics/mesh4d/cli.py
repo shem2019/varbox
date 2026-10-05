@@ -604,6 +604,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--serial", action="store_true", help="process the two cameras one after another"
     )
+    r.add_argument(
+        "--mask-workers",
+        type=int,
+        default=0,
+        help="SAM 2 processes tracking chunks at once (0 = from CPU cores, 1 = sequential)",
+    )
     r.add_argument("--only-view", choices=["A", "B"], help=argparse.SUPPRESS)
     c = sub.add_parser("combine", help="rescore a finished run's events with VideoMAE")
     c.add_argument("--run-dir", required=True)

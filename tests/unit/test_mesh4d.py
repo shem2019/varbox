@@ -322,3 +322,16 @@ def test_swapped_chunk_boundary_is_relabelled(tmp_path) -> None:  # type: ignore
     with np.load(tmp_path / "chunk_0001.npz") as z:
         assert z["red_box"][0].tolist() == left
         assert z["red_bits"].max() == 1  # the bits travelled with the box
+
+
+def test_run_parser_defines_every_option_the_run_reads() -> None:
+    import re
+    from pathlib import Path
+
+    from boxing_analytics.mesh4d import cli
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+    run_body = source[source.index("def run(args") : source.index("def _final_scene(")]
+    used = set(re.findall(r"args\.([a-z_0-9]+)", run_body))
+    parsed = vars(cli.build_parser().parse_args(["run", "--run-dir", "x", "--video-a", "y"]))
+    assert used <= set(parsed), f"options read but never defined: {sorted(used - set(parsed))}"
