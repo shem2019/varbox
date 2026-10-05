@@ -25,6 +25,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from boxing_analytics.mesh4d.jsonsafe import safe_dumps
 from boxing_analytics.mesh4d.video_io import VideoInfo, probe, read_frame
 
 STAGES = ("seed", "masks", "body", "world", "fuse", "contact", "render", "export")
@@ -100,7 +101,7 @@ def run(args: argparse.Namespace) -> int:
             if audio_a is None or audio_b is None:
                 raise RuntimeError("no audio to sync from; pass --offset-s")
             sync = audio_offset(audio_a, audio_b, 8000)
-        sync_path.write_text(json.dumps(sync.to_dict(), indent=2), encoding="utf-8")
+        sync_path.write_text(safe_dumps(sync.to_dict(), indent=2), encoding="utf-8")
         log(f"sync: B = A + {sync.offset_s:.3f}s ({sync.method}, confidence {sync.confidence:.1f})")
         if sync.confidence < 6:
             log("sync: low confidence; check run_dir/sync.json or pass --offset-s")
@@ -124,7 +125,7 @@ def run(args: argparse.Namespace) -> int:
         "sam3d_repo": args.hf_repo,
         "inference_type": args.inference_type,
     }
-    (run_dir / "run.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
+    (run_dir / "run.json").write_text(safe_dumps(run_meta, indent=2), encoding="utf-8")
 
     # ---------------------------------------------------------------- seed + masks
     from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks
@@ -202,7 +203,7 @@ def run(args: argparse.Namespace) -> int:
                 if name == "A":
                     run_meta["window_a"] = [first_seed, view["stop"]]
                     (run_dir / "run.json").write_text(
-                        json.dumps(run_meta, indent=2), encoding="utf-8"
+                        safe_dumps(run_meta, indent=2), encoding="utf-8"
                     )
         if "masks" in only:
             track_masks(
@@ -281,7 +282,7 @@ def run(args: argparse.Namespace) -> int:
             try:
                 fusion = align_views(a, b, b_index, log)
                 (run_dir / "fusion.json").write_text(
-                    json.dumps(fusion.to_dict(), indent=2), encoding="utf-8"
+                    safe_dumps(fusion.to_dict(), indent=2), encoding="utf-8"
                 )
                 if fusion.median_residual_m > 0.25:
                     log(
@@ -312,7 +313,7 @@ def run(args: argparse.Namespace) -> int:
             summary = write_reports(
                 report_dir, final, contacts, punch_events, n_views=n_views, run_meta=run_meta
             )
-            log(f"summary: {json.dumps(summary['tally'])} -> {summary['suggestion'].get('lean')}")
+            log(f"summary: {safe_dumps(summary['tally'])} -> {summary['suggestion'].get('lean')}")
 
     # ---------------------------------------------------------------- renders + viewer
     if "render" in only:
@@ -413,7 +414,7 @@ def combine(args: argparse.Namespace) -> int:
     )
     out = run_dir / "report_combined"
     out.mkdir(exist_ok=True)
-    (out / "events.json").write_text(json.dumps(combined, indent=2), encoding="utf-8")
+    (out / "events.json").write_text(safe_dumps(combined, indent=2), encoding="utf-8")
     fighters = [r for r in ("red", "blue") if r in scene.roles]
     tally = {
         r: {"thrown": 0, "landed_head": 0, "landed_torso": 0, "blocked": 0, "missed": 0}
@@ -431,8 +432,8 @@ def combine(args: argparse.Namespace) -> int:
         "mesh_weight": args.mesh_weight,
         "tally": tally,
     }
-    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    log(f"combine: tally {json.dumps(tally)}")
+    (out / "summary.json").write_text(safe_dumps(summary, indent=2), encoding="utf-8")
+    log(f"combine: tally {safe_dumps(tally)}")
     if not args.skip_render:
         contacts, _, _ = analyse(scene, n_views, log=log)
         render_dir = run_dir / "render"
@@ -510,7 +511,7 @@ def evaluate_runs(args: argparse.Namespace) -> int:
     print(table)
     out = Path(args.output)
     out.write_text(table + "\n", encoding="utf-8")
-    out.with_suffix(".json").write_text(json.dumps(totals, indent=2), encoding="utf-8")
+    out.with_suffix(".json").write_text(safe_dumps(totals, indent=2), encoding="utf-8")
     return 0
 
 

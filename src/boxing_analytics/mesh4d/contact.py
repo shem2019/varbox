@@ -193,10 +193,10 @@ def compute_frame_contacts(
                 )
                 g[i] = [rg[r] for r in REGIONS]
             vel = np.gradient(centre, 1.0 / fps, axis=0)
-            spd = np.linalg.norm(vel, axis=1)
+            spd = np.nan_to_num(np.linalg.norm(vel, axis=1))
             target = kp3d[defender][:, KP["nose"]] * 0.5 + kp3d[defender][:, KP["neck"]] * 0.5
             to_target = normalize(target - centre)
-            cos = np.sum(normalize(vel) * to_target, axis=1)
+            cos = np.nan_to_num(np.sum(normalize(vel) * to_target, axis=1))
             ext = np.linalg.norm(centre - kp3d[attacker][:, shoulder_i], axis=1)
             gaps[key] = g
             speed[key] = np.where(both, spd, 0.0)

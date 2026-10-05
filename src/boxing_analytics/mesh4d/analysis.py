@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from boxing_analytics.mesh4d.contact import (
     tally,
 )
 from boxing_analytics.mesh4d.geometry import KP
+from boxing_analytics.mesh4d.jsonsafe import safe_dumps
 from boxing_analytics.mesh4d.reconstruct import ViewScene
 
 NDArray = np.ndarray[Any, Any]
@@ -110,7 +110,7 @@ def write_reports(
     out_dir.mkdir(parents=True, exist_ok=True)
     fighters = [r for r in ("red", "blue") if r in scene.roles]
     event_dicts = [e.to_dict() for e in events]
-    (out_dir / "events.json").write_text(json.dumps(event_dicts, indent=2), encoding="utf-8")
+    (out_dir / "events.json").write_text(safe_dumps(event_dicts, indent=2), encoding="utf-8")
     offset = int(scene.frames[0])
     running = {r: {"thrown": 0, "landed": 0} for r in fighters}
     by_frame: dict[int, list[PunchEvent]] = {}
@@ -151,7 +151,7 @@ def write_reports(
                         },
                     }
                 row["fighters"][r] = entry
-            fh.write(json.dumps(row) + "\n")
+            fh.write(safe_dumps(row) + "\n")
     counts = tally(events, tuple(fighters))
     summary = {
         "disclaimer": DISCLAIMER,
@@ -165,5 +165,5 @@ def write_reports(
         "suggestion": round_suggestion(counts, events),
         "run": run_meta,
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    (out_dir / "summary.json").write_text(safe_dumps(summary, indent=2), encoding="utf-8")
     return summary

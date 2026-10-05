@@ -6,7 +6,6 @@ every later frame just indexes the same vertex subset. Positions are quantised t
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ import numpy as np
 
 from boxing_analytics.mesh4d.contact import REGIONS, FrameContact
 from boxing_analytics.mesh4d.geometry import glove_centres
+from boxing_analytics.mesh4d.jsonsafe import safe_dumps
 from boxing_analytics.mesh4d.reconstruct import ViewScene
 
 NDArray = np.ndarray[Any, Any]
@@ -114,6 +114,6 @@ def export_viewer(
                 if (role, hand) in contacts.gaps
             }
         manifest["roles"].append(entry)
-    (out_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (out_dir / "manifest.json").write_text(safe_dumps(manifest), encoding="utf-8")
     shutil.copy(VIEWER_DIR / "index.html", out_dir / "index.html")
     return out_dir

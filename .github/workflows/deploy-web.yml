@@ -1,0 +1,62 @@
+name: Deploy VAR Box website
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "web/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Check PHP syntax
+        run: |
+          set -euo pipefail
+          find web/public -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VARBOX_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${{ secrets.VARBOX_SSH_PORT }}" -H "${{ secrets.VARBOX_SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upload release
+        env:
+          TARGET: ${{ secrets.VARBOX_SSH_USER }}@${{ secrets.VARBOX_SSH_HOST }}
+          PORT: ${{ secrets.VARBOX_SSH_PORT }}
+        run: |
+          set -euo pipefail
+          echo "${GITHUB_SHA::7}" > web/RELEASE
+          rsync -rlz --delete -e "ssh -i ~/.ssh/deploy_key -p $PORT" web/ "$TARGET:varbox-release/"
+
+      - name: Install release
+        env:
+          TARGET: ${{ secrets.VARBOX_SSH_USER }}@${{ secrets.VARBOX_SSH_HOST }}
+          PORT: ${{ secrets.VARBOX_SSH_PORT }}
+        run: ssh -i ~/.ssh/deploy_key -p "$PORT" "$TARGET" 'bash varbox-release/deploy/install.sh'
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          for path in / /login /assets/varbox.css; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://varbox.guestpassvms.com$path")
+            echo "$path -> $code"; [ "$code" = "200" ]
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://varbox.guestpassvms.com/src/bootstrap.php)
+          echo "/src/bootstrap.php -> $code"; [ "$code" = "404" ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://varbox.guestpassvms.com/storage/config.json)
+          echo "/storage/config.json -> $code"; [ "$code" = "404" ]

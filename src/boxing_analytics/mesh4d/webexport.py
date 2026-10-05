@@ -24,6 +24,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from boxing_analytics.mesh4d.jsonsafe import safe_dumps
 from boxing_analytics.mesh4d.masklets import MaskStore
 from boxing_analytics.mesh4d.video_io import iter_frames
 
@@ -151,7 +152,7 @@ def export_web(run_dir: Path, title: str | None = None, log: LogFn = print) -> P
         [cv2.IMWRITE_JPEG_QUALITY, 85],
     )
     (out / "camera.json").write_text(
-        json.dumps(
+        safe_dumps(
             {
                 "source_size": [src_w, src_h],
                 "web_size": [w, h],
@@ -179,8 +180,8 @@ def export_web(run_dir: Path, title: str | None = None, log: LogFn = print) -> P
 
     events_mesh = read(run_dir / "report" / "events.json") or []
     events_after = read(run_dir / "report_combined" / "events.json")
-    (out / "events_before.json").write_text(json.dumps(events_mesh), encoding="utf-8")
-    (out / "events.json").write_text(json.dumps(events_after or events_mesh), encoding="utf-8")
+    (out / "events_before.json").write_text(safe_dumps(events_mesh), encoding="utf-8")
+    (out / "events.json").write_text(safe_dumps(events_after or events_mesh), encoding="utf-8")
 
     videos = {}
     render = run_dir / "render"
@@ -228,7 +229,7 @@ def export_web(run_dir: Path, title: str | None = None, log: LogFn = print) -> P
     evaluation = run_dir.parent / "evaluation_heldout.json"
     if evaluation.exists():
         analysis["evaluation_note"] = "Scored against the dataset's hand labels"
-    (out / "analysis.json").write_text(json.dumps(analysis, indent=2), encoding="utf-8")
+    (out / "analysis.json").write_text(safe_dumps(analysis, indent=2), encoding="utf-8")
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     log(f"web: package ready at {out} ({size / 1e6:.0f} MB)")
     return out
