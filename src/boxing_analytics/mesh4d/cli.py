@@ -170,7 +170,7 @@ def run(args: argparse.Namespace) -> int:
         only -= per_camera
 
     # ---------------------------------------------------------------- seed + masks
-    from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks
+    from boxing_analytics.mesh4d.masklets import MaskConfig, track_masks, track_masks_parallel
     from boxing_analytics.mesh4d.seeding import (
         Seed,
         draw_seeds,
@@ -186,6 +186,7 @@ def run(args: argparse.Namespace) -> int:
         model_config=args.sam2_config,
         device=args.device,
         max_side=args.mask_max_side,
+        workers=args.mask_workers,
         yolo_model=args.yolo_model,
     )
     for name, view in views.items():
@@ -248,7 +249,8 @@ def run(args: argparse.Namespace) -> int:
                         safe_dumps(run_meta, indent=2), encoding="utf-8"
                     )
         if "masks" in only:
-            track_masks(
+            tracker = track_masks if args.mask_workers == 1 else track_masks_parallel
+            tracker(
                 info,
                 view["start"],
                 view["stop"],

@@ -64,7 +64,7 @@ export class LayersPlayer {
     this.seekTo = seekTo;
     this.raf = 0;
     this.build();
-    this.init().catch((err) => { this.loading.textContent = 'This analysis could not load: ' + err.message; });
+    this.init().catch((err) => { this.loading.innerHTML = `<div>The replay stopped loading<small>${err.message}. Reload the page to try again.</small></div>`; });
   }
 
   build() {
@@ -74,7 +74,8 @@ export class LayersPlayer {
           <div class="stage" tabindex="0" aria-label="Layered replay">
             <canvas class="gl"></canvas><canvas class="three"></canvas>
             <div class="hud"></div>
-            <div class="loading">Loading layers…</div>
+            <div class="loading" role="status"><div class="spinner"></div><div>Loading the replay<small class="detail">footage and layers</small></div></div>
+            <div class="buffering" hidden><div class="spinner"></div></div>
           </div>
           <div class="transport">
             <button class="btn icon-btn" data-act="back" title="Previous frame (←)" aria-label="Previous frame"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5z"/></svg></button>
@@ -102,6 +103,8 @@ export class LayersPlayer {
     this.threeCanvas = $('canvas.three');
     this.hud = $('.hud');
     this.loading = $('.loading');
+    this.loadingDetail = $('.loading .detail');
+    this.buffering = $('.buffering');
     this.range = $('input[type=range]');
     this.timeEl = $('.time');
     this.playBtn = $('[data-act=play]');
@@ -155,7 +158,16 @@ export class LayersPlayer {
     video.muted = true; video.playsInline = true; video.preload = 'auto';
     video.addEventListener('play', () => this.setPlaying(true));
     video.addEventListener('pause', () => this.setPlaying(false));
-    video.addEventListener('seeked', () => { this.dirty = true; });
+    video.addEventListener('seeked', () => { this.dirty = true; this.buffering.hidden = true; });
+    video.addEventListener('waiting', () => { this.buffering.hidden = false; });
+    video.addEventListener('seeking', () => { this.buffering.hidden = false; });
+    video.addEventListener('playing', () => { this.buffering.hidden = true; });
+    video.addEventListener('canplay', () => { this.buffering.hidden = true; });
+    video.addEventListener('progress', () => {
+      if (!this.loading.isConnected || !video.duration || !video.buffered.length) return;
+      const pct = Math.round(100 * video.buffered.end(video.buffered.length - 1) / video.duration);
+      this.loadingDetail.textContent = `footage ${pct}% buffered`;
+    });
     video.addEventListener('loadeddata', () => { this.dirty = true; });
     this.video = video;
     const plate = new Image();

@@ -15,7 +15,7 @@ export class Viewer4D {
     this.root.innerHTML = `
       <div class="player">
         <div>
-          <div class="stage" tabindex="0" aria-label="3D replay" style="aspect-ratio:16/9"><div class="loading">Loading 3D bodies…</div><div class="hud"></div></div>
+          <div class="stage" tabindex="0" aria-label="3D replay" style="aspect-ratio:16/9"><div class="loading" role="status"><div class="spinner"></div><div>Loading 3D bodies<small>every frame of both boxers</small></div></div><div class="hud"></div></div>
           <div class="transport">
             <button class="btn icon-btn primary" data-act="play" aria-label="Play"><svg viewBox="0 0 16 16"><path d="M4 2.5v11l9-5.5z"/></svg></button>
             <div class="scrub"><div class="marks"></div><input type="range" min="0" max="0" value="0" aria-label="Timeline"></div>
@@ -44,7 +44,7 @@ export class Viewer4D {
       if (e.code === 'ArrowRight') { this.cur = Math.min(this.n - 1, this.cur + 1); this.setFrame(this.cur); }
       if (e.code === 'ArrowLeft') { this.cur = Math.max(0, this.cur - 1); this.setFrame(this.cur); }
     });
-    this.init().catch((err) => { root.querySelector('.loading').textContent = 'The 3D bodies could not load: ' + err.message; });
+    this.init().catch((err) => { root.querySelector('.loading').innerHTML = `<div>The 3D bodies stopped loading<small>${err.message}. Reload the page to try again.</small></div>`; });
   }
 
   async init() {

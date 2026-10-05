@@ -8,6 +8,7 @@ A role that disappears is re-found at the next chunk boundary by colour-based re
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import time
 from collections.abc import Callable
@@ -35,6 +36,8 @@ class MaskConfig:
     chunk_frames: int = 240
     min_area_frac: float = 0.0015
     yolo_model: str = "yolo11m-pose.pt"
+    # SAM 2 processes tracking chunks at once (0 = from CPU cores; 1 = the sequential tracker).
+    workers: int = 0
 
 
 def mask_to_box(mask: NDArray) -> tuple[float, float, float, float] | None:
@@ -332,3 +335,266 @@ def track_masks(
         if chunk_stop >= stop:
             break
         chunk_start = chunk_stop - 1
+
+
+# --------------------------------------------------------------------------- parallel chunks
+#
+# Each chunk is seeded by its own colour-confirmed detection of both boxers, so chunks track
+# independently and run side by side in several SAM 2 processes. A chunk without a clear colour
+# difference continues from the previous chunk's last mask afterwards, in order. Boundaries are
+# checked for red/blue swaps.
+
+_WORKER: dict[str, Any] = {}
+
+
+def auto_mask_workers() -> int:
+    env = os.environ.get("VARBOX_MASK_WORKERS")
+    if env:
+        return max(1, int(env))
+    return max(1, min(6, (os.cpu_count() or 2) // 3))
+
+
+def _init_worker(config: dict[str, Any]) -> None:
+    from sam2.build_sam import build_sam2_video_predictor
+
+    cfg = MaskConfig(**config)
+    _WORKER["config"] = cfg
+    _WORKER["predictor"] = build_sam2_video_predictor(
+        cfg.model_config,
+        cfg.checkpoint,
+        device=cfg.device,
+        hydra_overrides_extra=["++model.non_overlap_masks=true"],
+    )
+
+
+def _chunk_job(task: dict[str, Any]) -> dict[str, Any]:
+    """Track one chunk in this worker's SAM 2. Prompts: seeds, detect (find both boxers), carry."""
+    import torch
+
+    from boxing_analytics.mesh4d.seeding import detect_roles
+
+    cfg: MaskConfig = _WORKER["config"]
+    predictor = _WORKER["predictor"]
+    video = VideoInfo(**task["video"])
+    c_start, c_stop = int(task["start"]), int(task["stop"])
+    roles: list[str] = task["roles"]
+    scale = float(task["scale"])
+    shape = tuple(task["mask_shape"])
+    started = time.monotonic()
+    prompts: dict[str, tuple[str, int, Any]] = {}
+    separation = None
+    if task["prompt"] == "seeds":
+        for role, seed in task["seeds"].items():
+            local = max(0, min(c_stop - c_start - 1, int(seed["frame_index"]) - c_start))
+            prompts[role] = ("box", local, np.asarray(seed["box"], dtype=np.float32) * scale)
+    elif task["prompt"] == "detect":
+        horizon = min(c_stop, c_start + int(2 * video.fps))
+        step = max(1, int(video.fps // 5))
+        for index, frame in iter_frames(video.path, c_start, horizon, step):
+            found = detect_roles(frame, index, model_path=cfg.yolo_model, device=cfg.device)
+            if found:
+                separation = float(found["red"].scores.get("separation", 0.0))
+                for role, seed in found.items():
+                    prompts[role] = (
+                        "box",
+                        index - c_start,
+                        np.asarray(seed.box, dtype=np.float32) * scale,
+                    )
+                break
+        if not prompts:
+            return {"index": task["index"], "status": "dependent"}
+    else:  # carry: the previous chunk's last mask for each role
+        with np.load(task["carry_from"]) as prev:
+            for role in roles:
+                boxes = prev[f"{role}_box"]
+                good = np.flatnonzero(~np.isnan(boxes[:, 0]))
+                if good.size:
+                    prompts[role] = ("mask", 0, unpack(prev[f"{role}_bits"][good[-1]], shape))
+    obj_ids = {role: i + 1 for i, role in enumerate(roles)}
+    id_roles = {v: k for k, v in obj_ids.items()}
+    n = c_stop - c_start
+    boxes_out = {r: np.full((n, 4), np.nan, dtype=np.float32) for r in roles}
+    bits_out = {r: np.zeros((n, (shape[0] * shape[1] + 7) // 8), dtype=np.uint8) for r in roles}
+    min_area = cfg.min_area_frac * shape[0] * shape[1]
+    autocast = (
+        torch.autocast("cuda", dtype=torch.bfloat16)
+        if cfg.device.startswith("cuda")
+        else torch.autocast("cpu", enabled=False)
+    )
+    with tempfile.TemporaryDirectory(prefix="varbox_m4d_") as tmp:
+        frames = _write_jpegs(video, c_start, c_stop, Path(tmp), scale)
+        with torch.inference_mode(), autocast:
+            state = predictor.init_state(
+                video_path=tmp, offload_video_to_cpu=True, async_loading_frames=False
+            )
+            for role, (kind, local, value) in prompts.items():
+                if kind == "box":
+                    predictor.add_new_points_or_box(
+                        state, frame_idx=local, obj_id=obj_ids[role], box=value
+                    )
+                else:
+                    predictor.add_new_mask(state, frame_idx=local, obj_id=obj_ids[role], mask=value)
+
+            def consume(stream: Any) -> None:
+                for local, ids, logits in stream:
+                    for k, obj in enumerate(ids):
+                        mask = (logits[k] > 0.0).squeeze(0).float().cpu().numpy().astype(bool)
+                        if mask.sum() < min_area:
+                            continue
+                        box = mask_to_box(mask)
+                        if box is None:
+                            continue
+                        role = id_roles[int(obj)]
+                        boxes_out[role][local] = np.asarray(box, dtype=np.float32) / scale
+                        bits_out[role][local] = pack(mask)
+
+            consume(predictor.propagate_in_video(state))
+            first = min(local for _, local, _ in prompts.values())
+            if first > 0:
+                consume(predictor.propagate_in_video(state, start_frame_idx=first, reverse=True))
+            predictor.reset_state(state)
+    payload: dict[str, NDArray] = {"frames": np.asarray(frames, dtype=np.int64)}
+    for role in roles:
+        payload[f"{role}_box"] = boxes_out[role][: len(frames)]
+        payload[f"{role}_bits"] = bits_out[role][: len(frames)]
+    np.savez_compressed(task["out"], **cast(dict[str, Any], payload))
+    coverage = {r: float(np.mean(~np.isnan(boxes_out[r][: len(frames), 0]))) for r in roles}
+    return {
+        "index": task["index"],
+        "status": "done",
+        "coverage": coverage,
+        "separation": separation,
+        "prompt": task["prompt"],
+        "seconds": time.monotonic() - started,
+        "frames": len(frames),
+    }
+
+
+def _box_at(path: Path, role: str, last: bool) -> NDArray | None:
+    with np.load(path) as z:
+        boxes = z[f"{role}_box"]
+    good = np.flatnonzero(~np.isnan(boxes[:, 0]))
+    if not good.size:
+        return None
+    return boxes[good[-1] if last else good[0]]
+
+
+def _fix_boundary_swaps(
+    out_dir: Path, results: dict[int, dict[str, Any]], roles: list[str], log: LogFn
+) -> None:
+    """Where red and blue swap across a chunk boundary and the new chunk's colour evidence is weak,
+    relabel the new chunk to follow the boxers' positions."""
+    if not {"red", "blue"} <= set(roles):
+        return
+    chunks = sorted(out_dir.glob("chunk_*.npz"))
+    for prev, cur in zip(chunks, chunks[1:], strict=False):
+        idx = int(cur.stem.split("_")[1])
+        er, eb = _box_at(prev, "red", last=True), _box_at(prev, "blue", last=True)
+        sr, sb = _box_at(cur, "red", last=False), _box_at(cur, "blue", last=False)
+        if er is None or eb is None or sr is None or sb is None:
+            continue
+        same = _box_iou(er, sr) + _box_iou(eb, sb)
+        cross = _box_iou(er, sb) + _box_iou(eb, sr)
+        if cross <= same + 0.3:
+            continue
+        sep = (results.get(idx) or {}).get("separation")
+        if sep is not None and sep >= 0.25:
+            log(f"masks: chunk {idx} disagrees with the previous chunk; colour evidence kept")
+            continue
+        with np.load(cur) as z:
+            data = {k: z[k] for k in z.files}
+        for key in ("box", "bits"):
+            data[f"red_{key}"], data[f"blue_{key}"] = data[f"blue_{key}"], data[f"red_{key}"]
+        np.savez_compressed(cur, **cast(dict[str, Any], data))
+        log(f"masks: chunk {idx} relabelled to keep red and blue continuous")
+
+
+def track_masks_parallel(
+    video: VideoInfo,
+    start: int,
+    stop: int,
+    seeds: dict[str, Seed],
+    out_dir: Path,
+    config: MaskConfig,
+    log: LogFn = print,
+) -> None:
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    roles = list(seeds.keys())
+    scale = min(1.0, config.max_side / float(max(video.width, video.height)))
+    mask_shape = (int(round(video.height * scale)), int(round(video.width * scale)))
+    workers = config.workers or auto_mask_workers()
+    (out_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "roles": roles,
+                "mask_shape": list(mask_shape),
+                "scale": scale,
+                "start": start,
+                "stop": stop,
+                "config": config.__dict__,
+                "seeds": {r: s.to_dict() for r, s in seeds.items()},
+                "parallel_workers": workers,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    spans = [
+        (i, s, min(stop, s + config.chunk_frames))
+        for i, s in enumerate(range(start, stop, config.chunk_frames))
+    ]
+    base = {
+        "video": {k: getattr(video, k) for k in ("path", "width", "height", "fps", "frame_count")},
+        "roles": roles,
+        "scale": scale,
+        "mask_shape": list(mask_shape),
+    }
+    seed_payload = {r: s.to_dict() for r, s in seeds.items()}
+    results: dict[int, dict[str, Any]] = {}
+    started = time.monotonic()
+    log(f"masks: {len(spans)} chunks on {workers} SAM 2 workers")
+    ctx = mp.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=ctx, initializer=_init_worker, initargs=(config.__dict__,)
+    ) as pool:
+        futures = {}
+        for i, c_start, c_stop in spans:
+            out = out_dir / f"chunk_{i:04d}.npz"
+            if out.exists():
+                results[i] = {"index": i, "status": "done", "cached": True}
+                continue
+            task = {**base, "index": i, "start": c_start, "stop": c_stop, "out": str(out)}
+            (
+                task.update(prompt="seeds", seeds=seed_payload)
+                if i == 0
+                else task.update(prompt="detect")
+            )
+            futures[i] = pool.submit(_chunk_job, task)
+        for i, future in sorted(futures.items()):
+            results[i] = future.result()
+            r = results[i]
+            if r["status"] == "done":
+                cov = ", ".join(f"{k}={v:.0%}" for k, v in r["coverage"].items())
+                log(f"masks: chunk {i} ({r['prompt']}) coverage {cov} in {r['seconds']:.0f}s")
+        # Chunks without a clear colour difference continue from their predecessor, in order.
+        for i, c_start, c_stop in spans:
+            if results.get(i, {}).get("status") != "dependent":
+                continue
+            task = {
+                **base,
+                "index": i,
+                "start": c_start,
+                "stop": c_stop,
+                "out": str(out_dir / f"chunk_{i:04d}.npz"),
+                "prompt": "carry",
+                "carry_from": str(out_dir / f"chunk_{i - 1:04d}.npz"),
+            }
+            results[i] = pool.submit(_chunk_job, task).result()
+            cov = ", ".join(f"{k}={v:.0%}" for k, v in results[i]["coverage"].items())
+            log(f"masks: chunk {i} (continued from previous) coverage {cov}")
+    _fix_boundary_swaps(out_dir, results, roles, log)
+    secs = time.monotonic() - started
+    log(f"masks: {stop - start} frames in {secs:.0f}s ({(stop - start) / max(secs, 1e-6):.1f} fps)")

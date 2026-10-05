@@ -296,3 +296,29 @@ def test_clinch_at_normal_distance_is_left_alone() -> None:
         kps, valid, {"red": np.zeros(n), "blue": np.zeros(n)}, np.full(n, 0.2), 50.0
     )
     assert not hidden["red"].any() and not hidden["blue"].any()
+
+
+def test_swapped_chunk_boundary_is_relabelled(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from boxing_analytics.mesh4d.masklets import _fix_boundary_swaps
+
+    left, right = [100.0, 100.0, 200.0, 400.0], [600.0, 100.0, 700.0, 400.0]
+
+    def chunk(name: str, red: list[float], blue: list[float]) -> None:
+        np.savez_compressed(
+            tmp_path / name,
+            frames=np.arange(3),
+            red_box=np.array([red] * 3, dtype=np.float32),
+            blue_box=np.array([blue] * 3, dtype=np.float32),
+            red_bits=np.zeros((3, 4), np.uint8),
+            blue_bits=np.ones((3, 4), np.uint8),
+        )
+
+    chunk("chunk_0000.npz", left, right)
+    chunk("chunk_0001.npz", right, left)  # red and blue came back swapped
+    chunk("chunk_0002.npz", left, right)  # strong colour evidence: left alone
+    _fix_boundary_swaps(
+        tmp_path, {1: {"separation": 0.05}, 2: {"separation": 0.6}}, ["red", "blue"], lambda m: None
+    )
+    with np.load(tmp_path / "chunk_0001.npz") as z:
+        assert z["red_box"][0].tolist() == left
+        assert z["red_bits"].max() == 1  # the bits travelled with the box

@@ -200,12 +200,18 @@ async function analysisPage(id, tab) {
     }).join('');
     body.innerHTML = `
       <div style="display:grid;gap:16px">
-        ${m.videos?.before_after ? `<div class="card" style="overflow:hidden"><video src="${base}before_after.mp4" controls playsinline preload="metadata" style="width:100%"></video></div>` : ''}
+        ${m.videos?.before_after ? `<div class="card media-box" style="overflow:hidden"><video src="${base}before_after.mp4" controls playsinline preload="auto" style="width:100%;aspect-ratio:32/9"></video><div class="media-wait" role="status"><div class="spinner"></div><div>Loading before and after<small>two replays side by side</small></div></div></div>` : ''}
         <div class="card" style="padding:16px"><div class="table-wrap"><table class="data">
           <thead><tr><th>Method</th><th>Boxer</th><th>Thrown</th><th>Head</th><th>Body</th><th>Blocked</th><th>Missed</th></tr></thead>
           <tbody>${row('Before: geometry', m.tally_before)}${m.tally_after ? row('After: geometry and strike model', m.tally_after) : ''}</tbody></table></div>
           <p class="muted" style="margin:12px 0 0;font-size:13px">Before uses the 3D bodies alone. After adds the strike model trained on labelled bouts, which reads each punch from the footage around the glove. ${before.length} punches in both.</p></div>
       </div>`;
+    const vid = body.querySelector('video'), wait = body.querySelector('.media-wait');
+    if (vid && wait) {
+      const done = () => wait.remove();
+      vid.addEventListener('loadeddata', done, { once: true });
+      vid.addEventListener('error', () => { wait.innerHTML = '<div>The video stopped loading<small>Reload the page to try again.</small></div>'; }, { once: true });
+    }
   } else if (tab === 'punches') {
     renderPunches(body, events, fps, id, m.start_s || 0);
   } else {
