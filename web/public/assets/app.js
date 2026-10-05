@@ -209,7 +209,9 @@ async function analysisPage(id, tab) {
     const vid = body.querySelector('video'), wait = body.querySelector('.media-wait');
     if (vid && wait) {
       const done = () => wait.remove();
+      if (vid.readyState >= 2) done();
       vid.addEventListener('loadeddata', done, { once: true });
+      vid.addEventListener('playing', done, { once: true });
       vid.addEventListener('error', () => { wait.innerHTML = '<div>The video stopped loading<small>Reload the page to try again.</small></div>'; }, { once: true });
     }
   } else if (tab === 'punches') {

@@ -1,0 +1,67 @@
+{
+  "mesh_only": {
+    "labelled_punches": 157,
+    "events": 138,
+    "matched": 104,
+    "recall": 0.662,
+    "hand_accuracy": 0.875,
+    "outcome_accuracy_4class": 0.279,
+    "outcome_accuracy_landed_blocked_missed": 0.317,
+    "confusion": {
+      "blocked -> blocked": 3,
+      "blocked -> landed_head": 1,
+      "blocked -> missed": 1,
+      "landed_body -> landed_body": 2,
+      "landed_body -> landed_head": 1,
+      "landed_body -> missed": 4,
+      "landed_head -> blocked": 22,
+      "landed_head -> landed_body": 3,
+      "landed_head -> landed_head": 15,
+      "landed_head -> missed": 15,
+      "missed -> blocked": 13,
+      "missed -> landed_body": 4,
+      "missed -> landed_head": 11,
+      "missed -> missed": 9
+    }
+  },
+  "videomae_only": {
+    "labelled_punches": 157,
+    "events": 138,
+    "matched": 104,
+    "recall": 0.662,
+    "hand_accuracy": 0.875,
+    "outcome_accuracy_4class": 0.481,
+    "outcome_accuracy_landed_blocked_missed": 0.519,
+    "confusion": {
+      "blocked -> landed_head": 5,
+      "landed_body -> landed_head": 3,
+      "landed_body -> missed": 4,
+      "landed_head -> blocked": 3,
+      "landed_head -> landed_body": 1,
+      "landed_head -> landed_head": 47,
+      "landed_head -> missed": 4,
+      "missed -> blocked": 2,
+      "missed -> landed_head": 32,
+      "missed -> missed": 3
+    }
+  },
+  "combined": {
+    "labelled_punches": 157,
+    "events": 138,
+    "matched": 104,
+    "recall": 0.662,
+    "hand_accuracy": 0.875,
+    "outcome_accuracy_4class": 0.49,
+    "outcome_accuracy_landed_blocked_missed": 0.529,
+    "confusion": {
+      "blocked -> landed_head": 5,
+      "landed_body -> landed_head": 3,
+      "landed_body -> missed": 4,
+      "landed_head -> landed_body": 1,
+      "landed_head -> landed_head": 46,
+      "landed_head -> missed": 8,
+      "missed -> landed_head": 32,
+      "missed -> missed": 5
+    }
+  }
+}
