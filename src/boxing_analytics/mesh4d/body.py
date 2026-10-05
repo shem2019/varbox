@@ -13,7 +13,9 @@ import json
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -41,6 +43,10 @@ class BodyConfig:
     box_pad: float = 0.08
     chunk_frames: int = 250
     focal_samples: int = 6
+    # Frames per GPU call (0 = size from free GPU memory); halves itself on out-of-memory.
+    batch_frames: int = 0
+    # CPU threads preparing crops ahead of the GPU (0 = from the core count).
+    prep_threads: int = 0
 
 
 def _import_sam3d(repo_dir: str) -> tuple[Any, Any, Any]:
@@ -216,6 +222,159 @@ class BodyRunner:
             result = dict(zip(roles, outputs, strict=False))
         return result
 
+    # ------------------------------------------------------------------ batched inference
+    def _auto_batch(self) -> int:
+        if self.config.batch_frames > 0:
+            return self.config.batch_frames
+        free, _ = self.torch.cuda.mem_get_info()
+        free_gb = free / 2**30
+        return int(max(4, min(32, free_gb // 1.5)))
+
+    def _prep_one(
+        self, frame: NDArray, entries: dict[str, Any], roles: list[str], video: VideoInfo
+    ) -> tuple[list[str], dict[str, Any] | None]:
+        """CPU side of one frame: colour conversion, box padding, crops (runs in a thread)."""
+        from sam_3d_body.data.utils.prepare_batch import (  # type: ignore[import-not-found]
+            prepare_batch,
+        )
+
+        present = [r for r in roles if entries[r][0] is not None]
+        if not present:
+            return present, None
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        boxes = [
+            _padded_box(np.asarray(entries[r][0]), self.config.box_pad, video.width, video.height)
+            for r in present
+        ]
+        while len(boxes) < len(roles):
+            boxes.append(boxes[0])  # fixed people per frame; padded slots are discarded
+        batch = prepare_batch(rgb, self.estimator.transform, np.stack(boxes).astype(np.float32))
+        batch["img_ori"] = []  # the full frame is only needed for focal estimation
+        return present, batch
+
+    def _prepared(
+        self, video: VideoInfo, c_start: int, c_stop: int, masks: MaskStore, roles: list[str]
+    ) -> Iterator[tuple[int, int, list[str], dict[str, Any] | None]]:
+        """(local, frame, present roles, batch) in order, prepared by a thread pool ahead of use."""
+        threads = self.config.prep_threads or max(2, min(6, (os.cpu_count() or 4) // 2))
+        depth = threads * 6
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            pending: deque[tuple[int, int, Future[Any]]] = deque()
+            for local, (index, frame) in enumerate(
+                prefetch(iter_frames(video.path, c_start, c_stop))
+            ):
+                entries = masks.get(index)
+                pending.append(
+                    (local, index, pool.submit(self._prep_one, frame, entries, roles, video))
+                )
+                while len(pending) > depth:
+                    lo, ix, fut = pending.popleft()
+                    yield (lo, ix, *fut.result())
+            while pending:
+                lo, ix, fut = pending.popleft()
+                yield (lo, ix, *fut.result())
+
+    def _forward(
+        self, items: list[tuple[int, int, list[str], dict[str, Any]]], height: int
+    ) -> list[dict[str, dict[str, Any]]]:
+        """One GPU call for several frames: batch shape [frames, people, ...]."""
+        from sam_3d_body.utils import recursive_to  # type: ignore[import-not-found]
+
+        torch = self.torch
+        first = items[0][3]
+        big: dict[str, Any] = {}
+        for key, value in first.items():
+            if torch.is_tensor(value):
+                big[key] = torch.cat([it[3][key] for it in items], dim=0)
+            else:
+                big[key] = value
+        big = recursive_to(big, "cuda")
+        model = self.estimator.model
+        model._initialize_batch(big)
+        if self.cam_int is not None:
+            k = self.cam_int.to(big["img"]).reshape(-1, 3, 3)[:1]
+            big["cam_int"] = k.expand(len(items), 3, 3).contiguous()
+        dummy = np.zeros((height, 1, 3), dtype=np.uint8)
+        with torch.no_grad():
+            out = model.run_inference(
+                dummy,
+                big,
+                inference_type="body",
+                transform_hand=self.estimator.transform_hand,
+                thresh_wrist_angle=self.estimator.thresh_wrist_angle,
+            )["mhr"]
+        out = recursive_to(recursive_to(out, "cpu"), "numpy")
+        people = big["img"].shape[1]
+        results = []
+        for k, (_, _, present, _) in enumerate(items):
+            frame_people = {}
+            for j, role in enumerate(present):
+                i = k * people + j
+                frame_people[role] = {
+                    "pred_vertices": out["pred_vertices"][i],
+                    "pred_keypoints_3d": out["pred_keypoints_3d"][i],
+                    "pred_keypoints_2d": out["pred_keypoints_2d"][i],
+                    "pred_cam_t": out["pred_cam_t"][i],
+                    "shape_params": out["shape"][i],
+                }
+            results.append(frame_people)
+        return results
+
+    def _forward_safe(self, items: list[Any], height: int) -> list[dict[str, dict[str, Any]]]:
+        """Batched forward that halves the batch on GPU out-of-memory instead of failing."""
+        try:
+            return self._forward(items, height)
+        except self.torch.cuda.OutOfMemoryError:
+            self.torch.cuda.synchronize()
+            if len(items) == 1:
+                raise
+            self.batch_size = max(1, len(items) // 2)
+            self.log(f"body: GPU memory full, batch reduced to {self.batch_size} frames")
+            mid = len(items) // 2
+            return self._forward_safe(items[:mid], height) + self._forward_safe(items[mid:], height)
+
+    def _store(
+        self,
+        arrays: dict[str, dict[str, Any]],
+        role: str,
+        person: dict[str, Any],
+        local: int,
+        n: int,
+    ) -> None:
+        assert self.intrinsics is not None
+        if self.convention is None:
+            self.convention, err = pick_convention(person, self.intrinsics)
+            self.log(f"body: output convention '{self.convention}' (reprojection {err:.1f}px)")
+        cam_t = _to_np(person["pred_cam_t"]).reshape(3)
+        verts = _apply_convention(
+            _to_np(person["pred_vertices"]).reshape(-1, 3), cam_t, self.convention
+        )
+        kp3d = _apply_convention(
+            _to_np(person["pred_keypoints_3d"]).reshape(-1, 3), cam_t, self.convention
+        )
+        a = arrays[role]
+        if "verts" not in a:
+            a["verts"] = np.full((n, verts.shape[0], 3), np.nan, dtype=np.float16)
+            a["kp3d"] = np.full((n, kp3d.shape[0], 3), np.nan, dtype=np.float32)
+            a["kp2d"] = np.full((n, kp3d.shape[0], 2), np.nan, dtype=np.float32)
+            a["valid"] = np.zeros(n, dtype=bool)
+            a["shape"] = np.full((n, _to_np(person["shape_params"]).size), np.nan, dtype=np.float32)
+        a["verts"][local] = verts.astype(np.float16)
+        a["kp3d"][local] = kp3d
+        a["kp2d"][local] = _to_np(person["pred_keypoints_2d"]).reshape(-1, 2)[:, :2]
+        a["shape"][local] = _to_np(person["shape_params"]).reshape(-1)
+        a["valid"][local] = True
+
+    def _flush(
+        self, items: list[Any], arrays: dict[str, dict[str, Any]], n: int, height: int
+    ) -> None:
+        if not items:
+            return
+        for item, people in zip(items, self._forward_safe(items, height), strict=True):
+            for role, person in people.items():
+                self._store(arrays, role, person, item[0], n)
+        items.clear()
+
     def run(self, video: VideoInfo, start: int, stop: int, masks: MaskStore, out_dir: Path) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         roles = masks.roles
@@ -226,80 +385,35 @@ class BodyRunner:
             self.calibrate_focal(video, sample.tolist(), masks)
         assert self.intrinsics is not None
         np.save(out_dir / "faces.npy", self.faces)
+        self.batch_size = self._auto_batch()
+        self.log(f"body: {self.batch_size} frames per GPU call")
         started = time.monotonic()
+        done = 0
         chunk = self.config.chunk_frames
         for chunk_index, c_start in enumerate(range(start, stop, chunk)):
             c_stop = min(stop, c_start + chunk)
             path = out_dir / f"chunk_{chunk_index:04d}.npz"
             if path.exists():
                 self.log(f"body: chunk {chunk_index} cached")
+                done += c_stop - c_start
                 continue
             n = c_stop - c_start
             store: dict[str, NDArray] = {"frames": np.arange(c_start, c_stop, dtype=np.int64)}
             arrays: dict[str, dict[str, Any]] = {r: {} for r in roles}
-            frames = prefetch(
-                iter_frames(video.path, c_start, c_stop),
-                transform=lambda item: (item[0], cv2.cvtColor(item[1], cv2.COLOR_BGR2RGB)),
-            )
-            for local, (index, rgb) in enumerate(frames):
-                entries = masks.get(index)
-                present = [r for r in roles if entries[r][0] is not None]
-                if not present:
-                    continue
-                boxes = [
-                    _padded_box(
-                        np.asarray(entries[r][0]), self.config.box_pad, video.width, video.height
-                    )
-                    for r in present
-                ]
-                full_masks: list[NDArray] = []
-                if self.config.use_mask:
-                    for r in present:
-                        low_res = entries[r][1]
-                        assert low_res is not None  # present roles always carry a mask
-                        full_masks.append(
-                            cv2.resize(
-                                low_res.astype(np.uint8),
-                                (video.width, video.height),
-                                interpolation=cv2.INTER_NEAREST,
-                            )
-                        )
-                people = self._run_frame(rgb, present, boxes, full_masks)
-                for role, person in people.items():
-                    if self.convention is None:
-                        self.convention, err = pick_convention(person, self.intrinsics)
-                        self.log(
-                            f"body: output convention '{self.convention}' "
-                            f"(reprojection {err:.1f}px)"
-                        )
-                    cam_t = _to_np(person["pred_cam_t"]).reshape(3)
-                    verts = _apply_convention(
-                        _to_np(person["pred_vertices"]).reshape(-1, 3), cam_t, self.convention
-                    )
-                    kp3d = _apply_convention(
-                        _to_np(person["pred_keypoints_3d"]).reshape(-1, 3), cam_t, self.convention
-                    )
-                    a = arrays[role]
-                    if "verts" not in a:
-                        a["verts"] = np.full((n, verts.shape[0], 3), np.nan, dtype=np.float16)
-                        a["kp3d"] = np.full((n, kp3d.shape[0], 3), np.nan, dtype=np.float32)
-                        a["kp2d"] = np.full((n, kp3d.shape[0], 2), np.nan, dtype=np.float32)
-                        a["valid"] = np.zeros(n, dtype=bool)
-                        a["shape"] = np.full(
-                            (n, _to_np(person["shape_params"]).size), np.nan, dtype=np.float32
-                        )
-                    a["verts"][local] = verts.astype(np.float16)
-                    a["kp3d"][local] = kp3d
-                    a["kp2d"][local] = _to_np(person["pred_keypoints_2d"]).reshape(-1, 2)[:, :2]
-                    a["shape"][local] = _to_np(person["shape_params"]).reshape(-1)
-                    a["valid"][local] = True
-                if local % 50 == 0:
-                    done = index - start + 1
-                    rate = done / max(time.monotonic() - started, 1e-6)
-                    self.log(
-                        f"body: frame {index} ({rate:.2f} fps, "
-                        f"eta {(stop - index) / max(rate, 1e-6):.0f}s)"
-                    )
+            queue_items: list[Any] = []
+
+            for local, index, present, batch in self._prepared(
+                video, c_start, c_stop, masks, roles
+            ):
+                if batch is not None:
+                    queue_items.append((local, index, present, batch))
+                if len(queue_items) >= self.batch_size:
+                    self._flush(queue_items, arrays, n, video.height)
+            self._flush(queue_items, arrays, n, video.height)
+            done += n
+            rate = done / max(time.monotonic() - started, 1e-6)
+            eta = (stop - start - done) / max(rate, 1e-6)
+            self.log(f"body: frame {c_stop - 1} ({rate:.2f} fps, eta {eta:.0f}s)")
             for role in roles:
                 for key, value in arrays[role].items():
                     store[f"{role}_{key}"] = value
@@ -311,6 +425,7 @@ class BodyRunner:
             "config": self.config.__dict__,
             "start": start,
             "stop": stop,
+            "batch_frames": self.batch_size,
         }
         (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
