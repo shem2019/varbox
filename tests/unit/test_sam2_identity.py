@@ -1,3 +1,5 @@
+import pytest
+
 from boxing_analytics.tracking.sam2_identity import (
     Sam2FighterIdentityTrack,
     SamRoleSample,
@@ -32,6 +34,8 @@ def test_sam_track_interpolates_boxes_and_assigns_unique_pose_ids(tmp_path) -> N
 
 
 def test_mps_compatibility_wrapper_restores_float32_memory() -> None:
+    pytest.importorskip("sam2", reason="SAM 2 is installed only on GPU and Apple machines")
+
     class FakeMemory:
         def __init__(self, dtype: str) -> None:
             self.dtype = dtype
