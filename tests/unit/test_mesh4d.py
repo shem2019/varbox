@@ -200,3 +200,36 @@ def test_punch_short_of_target_is_missed() -> None:
     red_right = [e for e in events if e.attacker == "red" and e.hand == "right"]
     assert len(red_right) == 1
     assert red_right[0].outcome == "missed"
+
+
+def test_fusion_prefers_classifier_but_mesh_breaks_ties() -> None:
+    from boxing_analytics.mesh4d.combine import fuse, mesh_distribution
+
+    far = {"min_gap_m": 0.30, "guard_gap_m": 0.30, "target": None}
+    touching = {"min_gap_m": -0.02, "guard_gap_m": 0.20, "target": "head"}
+    assert max(mesh_distribution(far, 0.09).items(), key=lambda kv: kv[1])[0] == "missed"
+    assert max(mesh_distribution(touching, 0.09).items(), key=lambda kv: kv[1])[0] == "landed_head"
+    confident = {"landed_head": 0.05, "landed_body": 0.02, "blocked": 0.03, "missed": 0.85, "no_punch": 0.05}
+    out = fuse(confident, mesh_distribution(touching, 0.09), 0.5)
+    assert max(out, key=out.get) == "missed"
+    torn = {"landed_head": 0.35, "landed_body": 0.05, "blocked": 0.05, "missed": 0.35, "no_punch": 0.2}
+    out = fuse(torn, mesh_distribution(touching, 0.09), 0.5)
+    assert max(out, key=out.get) == "landed_head"
+    assert abs(sum(out.values()) - 1.0) < 1e-9
+
+
+def test_olympic_matching_is_one_to_one() -> None:
+    from boxing_analytics.mesh4d.olympic_eval import evaluate
+
+    gt = [
+        {"start": 100, "end": 110, "label": "landed_head", "hand": "left"},
+        {"start": 300, "end": 310, "label": "missed", "hand": "right"},
+    ]
+    events = [
+        {"contact_frame": 104, "peak_frame": 102, "hand": "left", "outcome": "landed", "target": "head"},
+        {"contact_frame": 106, "peak_frame": 105, "hand": "left", "outcome": "blocked", "target": None},
+        {"contact_frame": None, "peak_frame": 500, "hand": "right", "outcome": "missed", "target": None},
+    ]
+    r = evaluate(gt, events)
+    assert r["matched"] == 1 and r["recall"] == 0.5
+    assert r["hand_accuracy"] == 1.0 and r["outcome_accuracy_4class"] == 1.0

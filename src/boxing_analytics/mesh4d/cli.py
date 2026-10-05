@@ -332,6 +332,114 @@ def run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _final_scene(run_dir: Path):  # type: ignore[no-untyped-def]
+    from boxing_analytics.mesh4d.reconstruct import ViewScene
+
+    fused = run_dir / "fused.npz"
+    if fused.exists():
+        return ViewScene.load(fused), 2
+    return ViewScene.load(run_dir / "view_A" / "scene.npz"), 1
+
+
+def combine(args: argparse.Namespace) -> int:
+    """Rescore a finished run's punch events with VideoMAE; writes report_combined/ and renders."""
+    from boxing_analytics.mesh4d.analysis import DISCLAIMER, analyse
+    from boxing_analytics.mesh4d.combine import VideoMAEScorer, combine_events
+    from boxing_analytics.mesh4d.contact import ContactConfig
+    from boxing_analytics.mesh4d.export import export_viewer
+    from boxing_analytics.mesh4d.render import render_overlay
+
+    run_dir = Path(args.run_dir)
+    log = _log_to(run_dir / "run.log")
+    meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    scene, n_views = _final_scene(run_dir)
+    events = json.loads((run_dir / "report" / "events.json").read_text(encoding="utf-8"))
+    scorer = VideoMAEScorer(args.model_dir, args.device)
+    tol = ContactConfig.for_views(n_views).contact_tol_m
+    combined = combine_events(
+        scene, events, meta["video_a"], scorer, mesh_weight=args.mesh_weight, contact_tol_m=tol, log=log
+    )
+    out = run_dir / "report_combined"
+    out.mkdir(exist_ok=True)
+    (out / "events.json").write_text(json.dumps(combined, indent=2), encoding="utf-8")
+    fighters = [r for r in ("red", "blue") if r in scene.roles]
+    tally = {r: {"thrown": 0, "landed_head": 0, "landed_torso": 0, "blocked": 0, "missed": 0} for r in fighters}
+    for e in combined:
+        row = tally[e["attacker"]]
+        row["thrown"] += 1
+        key = f"landed_{e['target']}" if e["outcome"] == "landed" else e["outcome"]
+        row[key] = row.get(key, 0) + 1
+    summary = {
+        "disclaimer": DISCLAIMER,
+        "method": "mesh events rescored by VideoMAE",
+        "model_dir": args.model_dir,
+        "mesh_weight": args.mesh_weight,
+        "tally": tally,
+    }
+    (out / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    log(f"combine: tally {json.dumps(tally)}")
+    if not args.skip_render:
+        contacts, _, _ = analyse(scene, n_views, log=log)
+        render_dir = run_dir / "render"
+        render_dir.mkdir(exist_ok=True)
+        render_overlay(
+            scene, meta["video_a"], render_dir / "overlay_A_combined.mp4", combined, device=args.device, log=log
+        )
+        export_viewer(scene, contacts, combined, run_dir / "viewer_combined", summary=summary)
+    log("combine: done")
+    return 0
+
+
+def evaluate_runs(args: argparse.Namespace) -> int:
+    """Before/after accuracy against the Olympic labels for every run directory given."""
+    from boxing_analytics.mesh4d.combine import OUTCOMES
+    from boxing_analytics.mesh4d.olympic_eval import combine_reports, evaluate, load_ground_truth
+
+    variants: dict[str, list[dict[str, Any]]] = {"mesh_only": [], "videomae_only": [], "combined": []}
+    lines = ["| clip | method | labelled | matched | recall | hand | outcome (4 class) | landed/blocked/missed |", "|---|---|---|---|---|---|---|---|"]
+    for run in args.runs:
+        run_dir = Path(run)
+        meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        task_dir = Path(meta["video_a"]).parent.parent
+        lo, hi = meta["window_a"]
+        gt = load_ground_truth(task_dir / "annotations.json", lo, hi)
+        combined_path = run_dir / "report_combined" / "events.json"
+        if not combined_path.exists():
+            print(f"skip {run}: no report_combined (run the combine command first)")
+            continue
+        combined = json.loads(combined_path.read_text(encoding="utf-8"))
+        mesh = json.loads((run_dir / "report" / "events.json").read_text(encoding="utf-8"))
+        video_only = []
+        for e in combined:
+            p = e["videomae_probabilities"]
+            label = max(OUTCOMES, key=lambda k: p.get(k, 0.0))
+            v = dict(e)
+            v["outcome"] = "landed" if label.startswith("landed") else label
+            v["target"] = {"landed_head": "head", "landed_body": "torso"}.get(label)
+            video_only.append(v)
+        for name, evs in (("mesh_only", mesh), ("videomae_only", video_only), ("combined", combined)):
+            r = evaluate(gt, evs)
+            variants[name].append(r)
+            lines.append(
+                f"| {run_dir.name} | {name} | {r['labelled_punches']} | {r['matched']} | {r['recall']:.0%} | "
+                f"{r['hand_accuracy']:.0%} | {r['outcome_accuracy_4class']:.0%} | "
+                f"{r['outcome_accuracy_landed_blocked_missed']:.0%} |"
+            )
+    totals = {name: combine_reports(rs) for name, rs in variants.items() if rs}
+    for name, r in totals.items():
+        lines.append(
+            f"| **all** | **{name}** | {r['labelled_punches']} | {r['matched']} | {r['recall']:.0%} | "
+            f"{r['hand_accuracy']:.0%} | {r['outcome_accuracy_4class']:.0%} | "
+            f"{r['outcome_accuracy_landed_blocked_missed']:.0%} |"
+        )
+    table = "\n".join(lines)
+    print(table)
+    out = Path(args.output)
+    out.write_text(table + "\n", encoding="utf-8")
+    out.with_suffix(".json").write_text(json.dumps(totals, indent=2), encoding="utf-8")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="boxing-analytics-4d",
@@ -366,6 +474,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--mask-prompt", action="store_true", help="also pass masks (checkpoint must support it)"
     )
     r.add_argument("--viewer-max-frames", type=int, default=1500)
+    c = sub.add_parser("combine", help="rescore a finished run's events with VideoMAE")
+    c.add_argument("--run-dir", required=True)
+    c.add_argument("--model-dir", default="models/varbox-videomae-cuda/best")
+    c.add_argument("--mesh-weight", type=float, default=0.5)
+    c.add_argument("--device", default="cuda")
+    c.add_argument("--skip-render", action="store_true")
+    e = sub.add_parser("evaluate", help="before/after accuracy against Olympic labels")
+    e.add_argument("runs", nargs="+")
+    e.add_argument("--output", default="runs/evaluation.md")
     return p
 
 
@@ -373,6 +490,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
         return run(args)
+    if args.command == "combine":
+        return combine(args)
+    if args.command == "evaluate":
+        return evaluate_runs(args)
     return 2
 
 
