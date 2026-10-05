@@ -105,14 +105,24 @@ def run(args: argparse.Namespace) -> int:
         log(f"sync: B = A + {sync.offset_s:.3f}s ({sync.method}, confidence {sync.confidence:.1f})")
         if sync.confidence < 6:
             log("sync: low confidence; check run_dir/sync.json or pass --offset-s")
-        start_b = map_frame(start_a, info_a.fps, info_b.fps, sync.offset_s)
-        stop_b = map_frame(stop_a, info_a.fps, info_b.fps, sync.offset_s)
-        if start_b < 0 or stop_b > info_b.frame_count:
-            log(
-                f"sync: window falls outside camera B ({start_b}-{stop_b} of "
-                f"{info_b.frame_count}); single view only"
-            )
+        # Phones start recording at different moments: keep the stretch both cameras saw.
+        first_a = int(np.ceil(max(0.0, -sync.offset_s) * info_a.fps))
+        last_a = int(np.floor((info_b.frame_count / info_b.fps - sync.offset_s) * info_a.fps))
+        overlap_start, overlap_stop = max(start_a, first_a), min(stop_a, last_a)
+        if overlap_stop - overlap_start < int(2 * info_a.fps):
+            log("sync: the two cameras share under two seconds of this window; camera A alone")
         else:
+            if (overlap_start, overlap_stop) != (start_a, stop_a):
+                log(
+                    f"sync: window trimmed to the overlap of both cameras, frames "
+                    f"{overlap_start}-{overlap_stop} of camera A"
+                )
+                start_a, stop_a = overlap_start, overlap_stop
+                views["A"].update(start=start_a, stop=stop_a)
+            start_b = max(0, map_frame(start_a, info_a.fps, info_b.fps, sync.offset_s))
+            stop_b = min(
+                info_b.frame_count, map_frame(stop_a, info_a.fps, info_b.fps, sync.offset_s)
+            )
             views["B"] = {"info": info_b, "start": start_b, "stop": stop_b, "seeds": args.seed_b}
             sync_meta = {**sync.to_dict(), "start_b": start_b, "stop_b": stop_b}
 

@@ -94,6 +94,10 @@ for key in $(printf '%s\n' "${!ROUND_A[@]}" | sort -V); do
     [ -f "$run_dir/$f" ] && cp "$run_dir/$f" "$dest/$(echo "$f" | tr / _)"
   done
   cp "$run_dir"/view_*/seed_preview.jpg "$dest/" 2>/dev/null || true
+  if [ -n "${VARBOX_WORKER_TOKEN:-}" ]; then
+    python -m boxing_analytics.mesh4d.worker publish "$run_dir" --title "$SESSION, round ${key#r}" \
+      || echo "!! publishing $key to the dashboard failed; results stay in $dest"
+  fi
 done
 
 log "Done. Results in $OUT"
