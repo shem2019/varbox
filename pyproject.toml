@@ -66,6 +66,7 @@ boxing-analytics-eval = "boxing_analytics.eval.run:main"
 boxing-analytics-dataset-audit = "boxing_analytics.training.dataset_audit:main"
 boxing-analytics-train-videomae = "boxing_analytics.training.train_videomae:main"
 boxing-analytics-eval-videomae = "boxing_analytics.training.evaluate_videomae:main"
+boxing-analytics-4d = "boxing_analytics.mesh4d.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
