@@ -51,7 +51,7 @@ python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version
 log "VAR Box and its server-side dependencies"
 $PIP numpy scipy "opencv-python-headless" lap ultralytics pyyaml \
   "transformers>=4.57,<5" "accelerate>=1.10,<2" "safetensors>=0.6,<1" \
-  "hydra-core>=1.3,<2" "iopath>=0.1.10,<1" "pillow>=10,<13" huggingface_hub kaggle pytest
+  "hydra-core>=1.3,<2" "iopath>=0.1.10,<1" "pillow>=10,<13" huggingface_hub kaggle gdown pytest
 $PIP -e "$REPO" --no-deps
 
 log "SAM 2.1 (masks)"
@@ -77,7 +77,18 @@ python -c "import moge" 2>/dev/null || $PIP "git+https://github.com/microsoft/Mo
 # MoGe pulls the newest huggingface_hub; transformers 4.x (VideoMAE) needs < 1.0.
 $PIP "huggingface_hub>=0.34,<1.0"
 
+cat > "$WORK/env.sh" <<EOF
+source "$VENV/bin/activate"
+export SAM3D_BODY_DIR="$SAM3D_DIR"
+export VARBOX_SAM2_CHECKPOINT="$MODELS/sam2.1/sam2.1_hiera_large.pt"
+export PYOPENGL_PLATFORM=egl
+export HF_HUB_DISABLE_TELEMETRY=1
+export DATA="$WORK/data/olympic"
+cd "$REPO"
+EOF
+
 log "Model downloads (gated: facebook/sam-3d-body-dinov3)"
+if [ -n "${HF_TOKEN:-}" ]; then hf auth login --token "$HF_TOKEN" >/dev/null; fi
 if ! python - <<'PY'
 from huggingface_hub import snapshot_download
 for repo in ("facebook/sam-3d-body-dinov3",):
@@ -92,15 +103,12 @@ fi
 python -c "from huggingface_hub import snapshot_download as s; s('Ruicheng/moge-2-vitl-normal')" >/dev/null
 python -c "from huggingface_hub import snapshot_download as s; s('MCG-NJU/videomae-base-finetuned-kinetics', local_dir='$MODELS/videomae-base-finetuned-kinetics')" >/dev/null
 (cd "$REPO" && python -c "from ultralytics import YOLO; YOLO('yolo11m-pose.pt')" >/dev/null)
-
-cat > "$WORK/env.sh" <<EOF
-source "$VENV/bin/activate"
-export SAM3D_BODY_DIR="$SAM3D_DIR"
-export VARBOX_SAM2_CHECKPOINT="$MODELS/sam2.1/sam2.1_hiera_large.pt"
-export PYOPENGL_PLATFORM=egl
-export HF_HUB_DISABLE_TELEMETRY=1
-cd "$REPO"
-EOF
+VIDEOMAE_REPO="${VARBOX_VIDEOMAE_REPO:-shemking/varbox-videomae-strike}"
+if [ ! -f "$MODELS/varbox-videomae-cuda/best/model.safetensors" ]; then
+  python -c "from huggingface_hub import snapshot_download as s; s('$VIDEOMAE_REPO', local_dir='$MODELS/varbox-videomae-cuda/best')" >/dev/null \
+    && echo "trained strike classifier: $VIDEOMAE_REPO" \
+    || echo "!! trained strike classifier $VIDEOMAE_REPO not available; mesh-only scoring until it is"
+fi
 
 log "Smoke checks"
 # shellcheck disable=SC1091

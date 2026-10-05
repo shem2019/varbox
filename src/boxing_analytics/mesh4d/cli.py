@@ -176,6 +176,16 @@ def run(args: argparse.Namespace) -> int:
             log(
                 f"seed {name}: {', '.join(f'{r}={tuple(round(v) for v in s.box)} ({s.source})' for r, s in seeds.items())}"
             )
+        if seeds_path.exists():
+            # Mask tracking can only reach back within its first chunk; footage before a late
+            # seed frame is pre-round anyway, so the window starts at the seed.
+            first_seed = min(s.frame_index for s in load_seeds(seeds_path).values())
+            if first_seed - view["start"] > 200:
+                log(f"seed {name}: window now starts at the seed frame {first_seed}")
+                view["start"] = first_seed
+                if name == "A":
+                    run_meta["window_a"] = [first_seed, view["stop"]]
+                    (run_dir / "run.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
         if "masks" in only:
             track_masks(
                 info,
