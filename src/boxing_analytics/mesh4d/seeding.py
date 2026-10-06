@@ -254,10 +254,34 @@ def _assign(
         kit = min(1.0, (sc["red"] + sc["blue"]) / 0.4)
         return 0.6 * sc["area"] / max_area + 0.4 * kit
 
-    ranked = sorted(pool, key=lambda item: fighter_score(item[1][1]), reverse=True)
-    fighters = ranked[:2]
+    def height(box: Box) -> float:
+        return box[3] - box[1]
+
+    def pair_score(a: tuple[Box, dict[str, float]], b: tuple[Box, dict[str, float]]) -> float:
+        """Two sparring boxers: both in kit, similar size (similar distance from the camera),
+        within sparring distance, with clearly different corner colours."""
+        (box_a, sa), (box_b, sb) = a, b
+        ha, hb = height(box_a), height(box_b)
+        size_ratio = min(ha, hb) / max(ha, hb, 1e-6)
+        cxa, cxb = 0.5 * (box_a[0] + box_a[2]), 0.5 * (box_b[0] + box_b[2])
+        gap = abs(cxa - cxb) / max(0.5 * (ha + hb), 1e-6)
+        separation = abs((sa["blue"] - sa["red"]) - (sb["blue"] - sb["red"]))
+        score = fighter_score(sa) + fighter_score(sb) + 0.8 * min(separation, 1.0)
+        score -= 1.5 * max(0.0, 0.6 - size_ratio)  # a seated or distant person is much smaller
+        score -= 0.5 * max(0.0, gap - 2.0)  # farther apart than sparring distance
+        score -= 2.0 * _iou(box_a, box_b)
+        return score
+
+    best_pair: tuple[Any, Any] | None = None
+    best_score = -1e9
+    for i in range(len(pool)):
+        for j in range(i + 1, len(pool)):
+            value = pair_score(pool[i][1], pool[j][1])
+            if value > best_score:
+                best_pair, best_score = (pool[i], pool[j]), value
+    fighters = list(best_pair) if best_pair else []
     seeds: dict[str, Seed] = {}
-    quality = -2.0 * (2 - len(fighters))
+    quality = best_score if best_pair else -4.0
     if len(fighters) == 2:
         (ia, (box_a, sa)), (ib, (box_b, sb)) = fighters
         da, db = sa["blue"] - sa["red"], sb["blue"] - sb["red"]
@@ -269,8 +293,6 @@ def _assign(
             scores = {k: round(v, 4) for k, v in sc.items()}
             scores["separation"] = round(separation, 4)
             seeds[role] = Seed(role, frame_index, box, "auto", scores)
-        kit = min(1.0, (sa["red"] + sa["blue"] + sb["red"] + sb["blue"]) / 0.8)
-        quality = 0.3 * kit + min(separation, 0.6)
     used = {i for i, _ in fighters}
     if with_referee:
         remaining = [(i, c) for i, c in enumerate(candidates) if i not in used and is_referee(c[1])]
