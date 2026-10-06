@@ -242,7 +242,8 @@ def run(args: argparse.Namespace) -> int:
             # Mask tracking can only reach back within its first chunk; footage before a late
             # seed frame is pre-round anyway, so the window starts at the seed.
             first_seed = min(s.frame_index for s in load_seeds(seeds_path).values())
-            if first_seed - view["start"] > 200:
+            # Parallel chunks find both boxers themselves, so only the sequential tracker skips ahead.
+            if args.mask_workers == 1 and first_seed - view["start"] > 200:
                 log(f"seed {name}: window now starts at the seed frame {first_seed}")
                 view["start"] = first_seed
                 if name == "A":
