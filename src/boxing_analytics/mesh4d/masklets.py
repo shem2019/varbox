@@ -567,6 +567,7 @@ def track_masks_parallel(
         "mask_shape": list(mask_shape),
     }
     seed_payload = {r: s.to_dict() for r, s in seeds.items()}
+    seed_frame = min(s.frame_index for s in seeds.values())
     results: dict[int, dict[str, Any]] = {}
     started = time.monotonic()
     log(f"masks: {len(spans)} chunks on {workers} SAM 2 workers")
@@ -581,11 +582,11 @@ def track_masks_parallel(
                 results[i] = {"index": i, "status": "done", "cached": True}
                 continue
             task = {**base, "index": i, "start": c_start, "stop": c_stop, "out": str(out)}
-            (
+            # The seeds prompt the chunk that holds them; every other chunk finds the boxers.
+            if c_start <= seed_frame < c_stop:
                 task.update(prompt="seeds", seeds=seed_payload)
-                if i == 0
-                else task.update(prompt="detect")
-            )
+            else:
+                task.update(prompt="detect")
             futures[i] = pool.submit(_chunk_job, task)
         for i, future in sorted(futures.items()):
             results[i] = future.result()
