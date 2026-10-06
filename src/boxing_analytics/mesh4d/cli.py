@@ -187,6 +187,7 @@ def run(args: argparse.Namespace) -> int:
         device=args.device,
         max_side=args.mask_max_side,
         workers=args.mask_workers,
+        share=2 if args.only_view else 1,
         yolo_model=args.yolo_model,
     )
     for name, view in views.items():

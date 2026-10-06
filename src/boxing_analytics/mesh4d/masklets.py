@@ -38,6 +38,8 @@ class MaskConfig:
     yolo_model: str = "yolo11m-pose.pt"
     # SAM 2 processes tracking chunks at once (0 = from CPU cores; 1 = the sequential tracker).
     workers: int = 0
+    # Camera processes running side by side, which split the machine between them.
+    share: int = 1
 
 
 def mask_to_box(mask: NDArray) -> tuple[float, float, float, float] | None:
@@ -347,11 +349,23 @@ def track_masks(
 _WORKER: dict[str, Any] = {}
 
 
-def auto_mask_workers() -> int:
+def auto_mask_workers(share: int = 1) -> int:
+    """SAM 2 processes for one camera: about 3 CPU cores and 6 GB of free GPU memory each,
+    split with the other camera processes running at the same time (`share`)."""
     env = os.environ.get("VARBOX_MASK_WORKERS")
     if env:
         return max(1, int(env))
-    return max(1, min(6, (os.cpu_count() or 2) // 3))
+    by_cpu = (os.cpu_count() or 2) // 3 // max(1, share)
+    by_gpu = 4
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free, _ = torch.cuda.mem_get_info()
+            by_gpu = int(free / 2**30 // 6 // max(1, share))
+    except Exception:
+        pass
+    return max(1, min(4, by_cpu, by_gpu))
 
 
 def _init_worker(config: dict[str, Any]) -> None:
@@ -525,7 +539,7 @@ def track_masks_parallel(
     roles = list(seeds.keys())
     scale = min(1.0, config.max_side / float(max(video.width, video.height)))
     mask_shape = (int(round(video.height * scale)), int(round(video.width * scale)))
-    workers = config.workers or auto_mask_workers()
+    workers = config.workers or auto_mask_workers(config.share)
     (out_dir / "meta.json").write_text(
         json.dumps(
             {
