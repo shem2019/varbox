@@ -272,7 +272,10 @@ def _assign(
         score += 0.6 * (
             min(1.0, sa.get("head_kit", 0.0) / 0.25) + min(1.0, sb.get("head_kit", 0.0) / 0.25)
         )
-        score -= 1.5 * max(0.0, 0.6 - size_ratio)  # a seated or distant person is much smaller
+        score -= 2.0 * max(0.0, 0.75 - size_ratio)  # a seated or distant person is much smaller
+        # Boxers share the ring floor, so their feet sit at about the same image height.
+        feet_gap = abs(box_a[3] - box_b[3]) / max(0.5 * (ha + hb), 1e-6)
+        score -= 2.0 * max(0.0, feet_gap - 0.12)
         score -= 0.5 * max(0.0, gap - 2.0)  # farther apart than sparring distance
         score -= 2.0 * _iou(box_a, box_b)
         return score
