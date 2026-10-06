@@ -156,13 +156,19 @@ def _head_patch(frame: NDArray, box: Box, kps: NDArray | None) -> NDArray:
 
 
 def plausible_boxer(box: Box, frame_size: tuple[int, int]) -> bool:
-    """A standing, fully framed person: taller than wide and clear of the frame's edges."""
+    """A standing person: taller than wide, clear of the side edges.
+
+    A boxer close to the phone may run off the bottom of the frame; that is accepted when the box
+    is tall. Short or wide shapes at the bottom edge (ring pads, a crouching photographer) are not.
+    """
     w, h = frame_size
     x1, y1, x2, y2 = box
     bw, bh = x2 - x1, y2 - y1
     if bh < 1.15 * bw:
         return False
-    if y2 > 0.985 * h or x1 < 0.005 * w or x2 > 0.995 * w:
+    if x1 < 0.005 * w or x2 > 0.995 * w:
+        return False
+    if y2 > 0.985 * h and bh < 0.35 * h:
         return False
     return (bw * bh) / float(w * h) >= 0.004
 
@@ -191,7 +197,8 @@ def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box,
             k: float(np.mean([g[k] for g in gloves])) if gloves else 0.0
             for k in ("red", "blue", "white")
         }
-        scores = {k: 0.5 * torso[k] + 0.25 * glove[k] + 0.25 * head[k] for k in torso}
+        # Headgear carries the corner colour most reliably: tops vary and walls can be red.
+        scores = {k: 0.35 * torso[k] + 0.2 * glove[k] + 0.45 * head[k] for k in torso}
         scores["torso_white"] = torso["white"]
         scores["area"] = (x2 - x1) * (y2 - y1) / float(w * h)
         scores["conf"] = conf
