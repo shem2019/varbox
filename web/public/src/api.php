@@ -6,6 +6,16 @@ declare(strict_types=1);
 const CHUNK_LIMIT = 16 * 1024 * 1024;
 const WORKER_ONLINE_SECONDS = 60;
 
+function owner_id(): int
+{
+    return (int) db()->query('SELECT MIN(id) FROM users')->fetchColumn();
+}
+
+function is_owner(array $user): bool
+{
+    return (int) $user['id'] === owner_id();
+}
+
 function analysis_row(array $row): array
 {
     $meta = json_decode($row['meta'] ?? '{}', true) ?: [];
@@ -119,7 +129,71 @@ function user_api(string $route, string $method): never
         json_out(['ok' => true]);
     }
     if ($route === 'me') {
-        json_out(['user' => $user, 'version' => VARBOX_VERSION]);
+        json_out(['user' => $user + ['owner' => is_owner($user)], 'version' => VARBOX_VERSION]);
+    }
+
+    // Team: everyone sees it; the owner (first account) adds and removes people.
+    if ($route === 'users' && $method === 'GET') {
+        $rows = $db->query('SELECT id, email, name, created_at FROM users ORDER BY id')->fetchAll();
+        $owner = owner_id();
+        json_out([
+            'users' => array_map(fn ($r) => [
+                'id' => (int) $r['id'],
+                'login' => $r['email'],
+                'name' => $r['name'],
+                'created_at' => $r['created_at'],
+                'owner' => (int) $r['id'] === $owner,
+            ], $rows),
+            'can_manage' => is_owner($user),
+        ]);
+    }
+    if ($route === 'users' && $method === 'POST') {
+        if (!is_owner($user)) {
+            fail('Only the owner adds people.', 403);
+        }
+        $in = body_json();
+        $login = strtolower(trim((string) ($in['login'] ?? '')));
+        $name = trim((string) ($in['name'] ?? '')) ?: $login;
+        $password = (string) ($in['password'] ?? '');
+        if (!preg_match('/^[a-z0-9._@+\-]{3,80}$/', $login)) {
+            fail('Use 3 to 80 letters, numbers or . _ - @ + for the login.');
+        }
+        if (strlen($password) < 8) {
+            fail('Use a password of at least 8 characters.');
+        }
+        $exists = $db->prepare('SELECT COUNT(*) FROM users WHERE email = ?');
+        $exists->execute([$login]);
+        if ((int) $exists->fetchColumn() > 0) {
+            fail('That login is already on the team.', 409);
+        }
+        $db->prepare('INSERT INTO users (email, name, pass_hash, created_at) VALUES (?, ?, ?, ?)')
+            ->execute([$login, $name, password_hash($password, PASSWORD_DEFAULT), now()]);
+        json_out(['ok' => true]);
+    }
+    if (preg_match('#^users/(\d+)$#', $route, $m) && $method === 'DELETE') {
+        if (!is_owner($user)) {
+            fail('Only the owner removes people.', 403);
+        }
+        $id = (int) $m[1];
+        if ($id === (int) $user['id']) {
+            fail('The owner account stays on the team.', 409);
+        }
+        $db->prepare('DELETE FROM users WHERE id = ?')->execute([$id]);
+        json_out(['ok' => true]);
+    }
+    if ($route === 'password' && $method === 'POST') {
+        $in = body_json();
+        $row = find('users', (int) $user['id']);
+        if (!password_verify((string) ($in['current'] ?? ''), $row['pass_hash'])) {
+            fail('Check the current password, then try again.', 403);
+        }
+        $next = (string) ($in['next'] ?? '');
+        if (strlen($next) < 8) {
+            fail('Use a new password of at least 8 characters.');
+        }
+        $db->prepare('UPDATE users SET pass_hash = ? WHERE id = ?')
+            ->execute([password_hash($next, PASSWORD_DEFAULT), $user['id']]);
+        json_out(['ok' => true]);
     }
 
     // Analyses

@@ -26,6 +26,7 @@
       <a href="/app/import" data-link data-nav="import"><svg viewBox="0 0 20 20"><path d="M10 13V3M6 7l4-4 4 4"/><path d="M3 13v3h14v-3"/></svg><span>Import</span></a>
       <a href="/app/jobs" data-link data-nav="jobs"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg><span>Jobs</span><b class="badge" id="jobs-badge" hidden></b></a>
       <a href="/app/gpu" data-link data-nav="gpu"><svg viewBox="0 0 20 20"><rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8 1v3M12 1v3M8 16v3M12 16v3M1 8h3M1 12h3M16 8h3M16 12h3"/></svg><span>GPU</span><i class="status-dot" id="gpu-dot"></i></a>
+      <a href="/app/team" data-link data-nav="team"><svg viewBox="0 0 20 20"><circle cx="7.5" cy="7" r="3"/><path d="M2 17c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><circle cx="14" cy="6" r="2.4"/><path d="M14 11.5c2.4 0 4 1.6 4 4"/></svg><span>Team</span></a>
     </nav>
     <div class="sidebar-foot">
       <button class="btn ghost sm" id="theme-toggle" type="button" aria-label="Switch theme"><svg viewBox="0 0 20 20" width="16" height="16"><path d="M10 3a7 7 0 1 0 7 7 5 5 0 0 1-7-7z"/></svg><span>Theme</span></button>

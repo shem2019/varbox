@@ -5,7 +5,7 @@ $heading = 'Sign in';
 $intro = 'Open your sessions, replays and punch reviews.';
 $form = <<<HTML
 <form data-endpoint="/api/login" novalidate>
-  <div class="field"><label for="email">Email</label><input class="input" id="email" name="email" type="email" autocomplete="username" required autofocus></div>
+  <div class="field"><label for="email">Email or username</label><input class="input" id="email" name="email" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></div>
   <div class="field"><label for="password">Password</label><input class="input" id="password" name="password" type="password" autocomplete="current-password" required></div>
   <div class="form-error" role="alert"></div>
   <button class="btn primary" type="submit" data-busy="Signing in…">Sign in</button>

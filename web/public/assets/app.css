@@ -167,3 +167,22 @@ dialog p { margin: 0 0 18px; color: var(--ink-2); }
   .page-head h1 { font-size: 32px; }
   .import-grid, .form-row { grid-template-columns: 1fr; }
 }
+
+/* Team */
+.team-body { display: grid; gap: 18px; max-width: 760px; }
+.team-list { padding: 4px 0; }
+.team-row { display: grid; grid-template-columns: 36px 1fr auto auto; align-items: center; gap: 12px; padding: 12px 16px; }
+.team-row + .team-row { border-top: 1px solid var(--line); }
+.team-row .avatar { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); font-weight: 600; }
+.team-row .who { display: grid; min-width: 0; }
+.team-row .who span { font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.team-row .when { font-size: 13px; }
+.team-add { padding: 18px; display: grid; gap: 12px; }
+.team-add h3 { font-size: 24px; }
+.team-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.team-add .hint { margin: 0; font-size: 13px; }
+@media (max-width: 700px) {
+  .team-fields { grid-template-columns: 1fr; }
+  .team-row { grid-template-columns: 36px 1fr auto; }
+  .team-row .when { display: none; }
+}

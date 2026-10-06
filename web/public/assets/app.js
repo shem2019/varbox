@@ -58,6 +58,7 @@ const routes = [
   [/^\/app\/import$/, () => importPage()],
   [/^\/app\/jobs$/, () => jobsPage()],
   [/^\/app\/gpu$/, () => gpuPage()],
+  [/^\/app\/team$/, () => teamPage()],
 ];
 
 function navigate(path, replace = false) {
@@ -360,6 +361,58 @@ async function jobsPage() {
 }
 
 // ------------------------------------------------------------------ GPU
+// ------------------------------------------------------------------ team
+async function teamPage() {
+  main.innerHTML = `<div class="page-head"><div><h1>Team</h1><div class="sub">Everyone who signs in to this dashboard sees every analysis.</div></div></div><div class="team-body"></div>`;
+  const body = main.querySelector('.team-body');
+  const draw = async () => {
+    const { users, can_manage: canManage } = await api('users');
+    body.innerHTML = `
+      <div class="card team-list">${users.map((u) => `
+        <div class="team-row">
+          <span class="avatar">${esc((u.name || u.login).slice(0, 1).toUpperCase())}</span>
+          <div class="who"><strong>${esc(u.name)}</strong><span class="muted mono">${esc(u.login)}</span></div>
+          <span class="muted when">${u.owner ? '<span class="chip">Owner</span>' : 'added ' + esc(fmtDate(u.created_at))}</span>
+          ${canManage && !u.owner ? `<button class="btn ghost sm danger" data-remove="${u.id}" data-name="${esc(u.name)}">Remove</button>` : ''}
+        </div>`).join('')}</div>
+      ${canManage ? `
+      <form class="card team-add" autocomplete="off">
+        <h3>Add a person</h3>
+        <div class="team-fields">
+          <div class="field"><label for="t-name">Name</label><input class="input" id="t-name" name="name" placeholder="Coach Oriek"></div>
+          <div class="field"><label for="t-login">Username or email</label><input class="input" id="t-login" name="login" required autocapitalize="none" spellcheck="false"></div>
+          <div class="field"><label for="t-pass">Password</label><input class="input" id="t-pass" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+        </div>
+        <div class="form-error" role="alert"></div>
+        <div><button class="btn primary" type="submit">Add to team</button></div>
+        <p class="muted hint">They sign in with this username and password at varbox.guestpassvms.com/login.</p>
+      </form>` : ''}`;
+    body.querySelectorAll('[data-remove]').forEach((b) => {
+      b.onclick = async () => {
+        if (!(await confirmDialog(`Remove ${b.dataset.name}?`, 'Their sign-in stops working straight away. Analyses stay in place.', 'Remove'))) return;
+        await api('users/' + b.dataset.remove, { method: 'DELETE' }).catch((err) => toast(err.message, 'error'));
+        draw();
+      };
+    });
+    const form = body.querySelector('.team-add');
+    if (form) {
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type=submit]');
+        const err = form.querySelector('.form-error');
+        btn.disabled = true; err.textContent = '';
+        try {
+          const res = await api('users', { method: 'POST', body: Object.fromEntries(new FormData(form)) });
+          if (res.status === 409) { err.textContent = res.error; return; }
+          toast('Added to the team');
+          draw();
+        } catch (x) { err.textContent = x.message; } finally { btn.disabled = false; }
+      };
+    }
+  };
+  await draw();
+}
+
 async function gpuPage() {
   main.innerHTML = `<div class="page-head"><div><h1>GPU</h1><div class="sub">Rented GPUs connect out to this dashboard, take queued analyses and report back.</div></div></div><div class="gpu-body"></div>`;
   const body = main.querySelector('.gpu-body');
