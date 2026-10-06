@@ -200,6 +200,7 @@ def _candidates(frame: NDArray, model_path: str, device: str) -> list[tuple[Box,
         # Headgear carries the corner colour most reliably: tops vary and walls can be red.
         scores = {k: 0.35 * torso[k] + 0.2 * glove[k] + 0.45 * head[k] for k in torso}
         scores["torso_white"] = torso["white"]
+        scores["head_kit"] = head["red"] + head["blue"]
         scores["area"] = (x2 - x1) * (y2 - y1) / float(w * h)
         scores["conf"] = conf
         out.append((box, scores))
@@ -267,6 +268,10 @@ def _assign(
         gap = abs(cxa - cxb) / max(0.5 * (ha + hb), 1e-6)
         separation = abs((sa["blue"] - sa["red"]) - (sb["blue"] - sb["red"]))
         score = fighter_score(sa) + fighter_score(sb) + 0.8 * min(separation, 1.0)
+        # Sparring boxers wear red or blue headgear; coaches and spectators do not.
+        score += 0.6 * (
+            min(1.0, sa.get("head_kit", 0.0) / 0.25) + min(1.0, sb.get("head_kit", 0.0) / 0.25)
+        )
         score -= 1.5 * max(0.0, 0.6 - size_ratio)  # a seated or distant person is much smaller
         score -= 0.5 * max(0.0, gap - 2.0)  # farther apart than sparring distance
         score -= 2.0 * _iou(box_a, box_b)
