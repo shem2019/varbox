@@ -365,10 +365,11 @@ async function gpuPage() {
   const body = main.querySelector('.gpu-body');
   const draw = async () => {
     const { workers, token } = await api('workers');
-    const cmd = `git clone -b feature/mesh4d https://github.com/shem2019/varbox.git ~/work/varbox && cd ~/work/varbox \\
-  && HF_TOKEN=<your Hugging Face token> bash scripts/gpu/setup.sh \\
-  && source ~/work/env.sh && VARBOX_WORKER_TOKEN=${token || '<token>'} \\
-     nohup python -m boxing_analytics.mesh4d.worker serve > ~/work/worker.log 2>&1 &`;
+    const cmd = `git clone https://github.com/shem2019/varbox.git ~/work/varbox; cd ~/work/varbox && git pull -q \\
+  && read -rsp "Hugging Face token: " HF_TOKEN && echo && export HF_TOKEN \\
+  && bash scripts/gpu/setup.sh && source ~/work/env.sh \\
+  && export VARBOX_WORKER_TOKEN=${token || 'WORKER_TOKEN'} \\
+  && (nohup python -m boxing_analytics.mesh4d.worker serve > ~/work/worker.log 2>&1 &)`;
     body.innerHTML = `
       <div class="workers" style="margin-bottom:22px">${workers.length ? workers.map((w) => {
         const i = w.info || {};
@@ -385,7 +386,7 @@ async function gpuPage() {
         </div>`;
       }).join('') : '<div class="card empty" style="grid-column:1/-1"><h3>Connect a GPU to start analysing</h3><p>Rent an NVIDIA GPU with 48 GB or more, then run the command below on it. It shows up here within a minute.</p></div>'}</div>
       <div class="card" style="padding:18px;display:grid;gap:10px"><h3 style="font-size:24px">Connect a GPU</h3>
-        <p class="muted" style="margin:0">One command installs everything on a fresh machine and connects it to this dashboard. Keep the worker token private.</p>
+        <p class="muted" style="margin:0">Paste this whole command on a fresh machine. It asks for your Hugging Face token (typing stays hidden), installs everything in about 25 minutes, and connects the GPU to this dashboard. Keep the worker token private.</p>
         <pre class="cmd">${esc(cmd)}</pre><div><button class="btn sm" id="copy">Copy command</button></div></div>`;
     body.querySelector('#copy').onclick = async () => {
       try { await navigator.clipboard.writeText(cmd); toast('Command copied'); } catch (err) { toast('Select the command and copy it by hand.', 'error'); }
