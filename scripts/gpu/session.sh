@@ -34,7 +34,7 @@ mkdir -p "$RAW" "$PREP" "$OUT"
 
 log "Fetching videos"
 if [[ "$SRC" == http* ]]; then
-  [ -n "$(ls -A "$RAW" 2>/dev/null)" ] || gdown --folder "$SRC" -O "$RAW" --remaining-ok
+  [ -n "$(ls -A "$RAW" 2>/dev/null)" ] || gdown --folder "$SRC" -O "$RAW"
 else
   cp -n "$SRC"/* "$RAW"/ 2>/dev/null || true
 fi

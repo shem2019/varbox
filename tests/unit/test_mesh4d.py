@@ -335,3 +335,20 @@ def test_run_parser_defines_every_option_the_run_reads() -> None:
     used = set(re.findall(r"args\.([a-z_0-9]+)", run_body))
     parsed = vars(cli.build_parser().parse_args(["run", "--run-dir", "x", "--video-a", "y"]))
     assert used <= set(parsed), f"options read but never defined: {sorted(used - set(parsed))}"
+
+
+def test_whistle_sync_finds_offset_through_crowd_noise() -> None:
+    from boxing_analytics.mesh4d.sync import best_offset
+
+    sr = 16000
+    rng = np.random.default_rng(8)
+    t = np.arange(sr * 30) / sr
+    a = rng.normal(scale=0.3, size=t.size).astype(np.float32)  # loud gym noise
+    b = rng.normal(scale=0.3, size=t.size).astype(np.float32)
+    for start in (4.0, 21.0):  # two whistles in A, heard 6.25 s later in B
+        for sig, t0 in ((a, start), (b, start + 6.25)):
+            sel = (t >= t0) & (t < t0 + 0.8)
+            sig[sel] += 0.25 * np.sin(2 * np.pi * 3100 * t[sel])
+    r = best_offset(a, b, sr)
+    assert abs(r.offset_s - 6.25) < 0.05
+    assert r.method == "whistle-xcorr"

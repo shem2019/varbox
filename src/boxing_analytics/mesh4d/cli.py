@@ -95,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
     views["A"] = {"info": info_a, "start": start_a, "stop": stop_a, "seeds": args.seed_a}
     sync_meta: dict[str, Any] | None = None
     if args.video_b:
-        from boxing_analytics.mesh4d.sync import SyncResult, audio_offset, map_frame
+        from boxing_analytics.mesh4d.sync import SyncResult, best_offset, map_frame
         from boxing_analytics.mesh4d.video_io import extract_audio
 
         info_b = probe(args.video_b)
@@ -106,10 +106,11 @@ def run(args: argparse.Namespace) -> int:
             payload = json.loads(sync_path.read_text(encoding="utf-8"))
             sync = SyncResult(payload["offset_s"], payload["confidence"], payload["method"])
         else:
-            audio_a, audio_b = extract_audio(args.video_a), extract_audio(args.video_b)
+            audio_a = extract_audio(args.video_a, sample_rate=16000)
+            audio_b = extract_audio(args.video_b, sample_rate=16000)
             if audio_a is None or audio_b is None:
-                raise RuntimeError("no audio to sync from; pass --offset-s")
-            sync = audio_offset(audio_a, audio_b, 8000)
+                raise RuntimeError("these videos carry no audio to sync from; pass --offset-s")
+            sync = best_offset(audio_a, audio_b, 16000)
         sync_path.write_text(safe_dumps(sync.to_dict(), indent=2), encoding="utf-8")
         log(f"sync: B = A + {sync.offset_s:.3f}s ({sync.method}, confidence {sync.confidence:.1f})")
         if sync.confidence < 6:
