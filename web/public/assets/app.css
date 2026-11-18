@@ -199,3 +199,7 @@ dialog.qr-dialog .qr { display: grid; place-items: center; padding: 12px 0; }
 dialog.qr-dialog .qr svg { width: 220px; height: 220px; background: #fff; padding: 8px; border-radius: 8px; }
 dialog.qr-dialog textarea { margin-top: 8px; font-size: 12px; }
 dialog.qr-dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
+/* Team row actions (set Google email, remove) */
+.team-row .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+@media (max-width: 700px) { .team-row .row-actions { grid-column: 1 / -1; justify-content: flex-start; } }

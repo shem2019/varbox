@@ -117,6 +117,9 @@ function user_api(string $route, string $method): never
     if ($route === 'login' && $method === 'POST') {
         api_login();
     }
+    if ($route === 'login/google' && $method === 'POST') {
+        api_login_google();
+    }
     if ($route === 'setup' && $method === 'POST') {
         api_setup();
     }
@@ -134,13 +137,15 @@ function user_api(string $route, string $method): never
 
     // Team: everyone sees it; the owner (first account) adds and removes people.
     if ($route === 'users' && $method === 'GET') {
-        $rows = $db->query('SELECT id, email, name, created_at FROM users ORDER BY id')->fetchAll();
+        $rows = $db->query('SELECT id, email, name, google_email, google_sub, created_at FROM users ORDER BY id')->fetchAll();
         $owner = owner_id();
         json_out([
             'users' => array_map(fn ($r) => [
                 'id' => (int) $r['id'],
                 'login' => $r['email'],
                 'name' => $r['name'],
+                'google_email' => $r['google_email'],
+                'google_linked' => $r['google_sub'] !== null && $r['google_sub'] !== '',
                 'created_at' => $r['created_at'],
                 'owner' => (int) $r['id'] === $owner,
             ], $rows),
@@ -152,22 +157,40 @@ function user_api(string $route, string $method): never
             fail('Only the owner adds people.', 403);
         }
         $in = body_json();
-        $login = strtolower(trim((string) ($in['login'] ?? '')));
-        $name = trim((string) ($in['name'] ?? '')) ?: $login;
-        $password = (string) ($in['password'] ?? '');
-        if (!preg_match('/^[a-z0-9._@+\-]{3,80}$/', $login)) {
-            fail('Use 3 to 80 letters, numbers or . _ - @ + for the login.');
+        $googleEmail = strtolower(trim((string) ($in['google_email'] ?? '')));
+        $name = trim((string) ($in['name'] ?? '')) ?: $googleEmail;
+        if (!filter_var($googleEmail, FILTER_VALIDATE_EMAIL)) {
+            fail('Enter the Google email for this person.');
         }
-        if (strlen($password) < 8) {
-            fail('Use a password of at least 8 characters.');
-        }
-        $exists = $db->prepare('SELECT COUNT(*) FROM users WHERE email = ?');
-        $exists->execute([$login]);
+        $exists = $db->prepare('SELECT COUNT(*) FROM users WHERE email = ? OR google_email = ?');
+        $exists->execute([$googleEmail, $googleEmail]);
         if ((int) $exists->fetchColumn() > 0) {
-            fail('That login is already on the team.', 409);
+            fail('That Google account is already on the team.', 409);
         }
-        $db->prepare('INSERT INTO users (email, name, pass_hash, created_at) VALUES (?, ?, ?, ?)')
-            ->execute([$login, $name, password_hash($password, PASSWORD_DEFAULT), now()]);
+        // The team member signs in with Google; a random hash fills the unused password column.
+        $unused = password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT);
+        $db->prepare('INSERT INTO users (email, name, google_email, pass_hash, created_at) VALUES (?, ?, ?, ?, ?)')
+            ->execute([$googleEmail, $name, $googleEmail, $unused, now()]);
+        json_out(['ok' => true]);
+    }
+    if (preg_match('#^users/(\d+)$#', $route, $m) && $method === 'PATCH') {
+        if (!is_owner($user)) {
+            fail('Only the owner sets Google emails.', 403);
+        }
+        $id = (int) $m[1];
+        find('users', $id);
+        $googleEmail = strtolower(trim((string) (body_json()['google_email'] ?? '')));
+        if (!filter_var($googleEmail, FILTER_VALIDATE_EMAIL)) {
+            fail('Enter a valid Google email.');
+        }
+        $exists = $db->prepare('SELECT COUNT(*) FROM users WHERE google_email = ? AND id != ?');
+        $exists->execute([$googleEmail, $id]);
+        if ((int) $exists->fetchColumn() > 0) {
+            fail('Another member already uses that Google account.', 409);
+        }
+        // Changing the email clears the stored account id, so the next Google sign-in links afresh.
+        $db->prepare('UPDATE users SET google_email = ?, google_sub = NULL WHERE id = ?')
+            ->execute([$googleEmail, $id]);
         json_out(['ok' => true]);
     }
     if (preg_match('#^users/(\d+)$#', $route, $m) && $method === 'DELETE') {
@@ -362,9 +385,115 @@ function api_login(): never
     $stmt = $db->prepare('SELECT * FROM users WHERE email = ?');
     $stmt->execute([strtolower(trim((string) ($in['email'] ?? '')))]);
     $user = $stmt->fetch();
-    if (!$user || !password_verify((string) ($in['password'] ?? ''), $user['pass_hash'])) {
+    // Only the owner keeps a password, as a fallback. Everyone else signs in with Google.
+    if (
+        !$user
+        || (int) $user['id'] !== owner_id()
+        || !password_verify((string) ($in['password'] ?? ''), $user['pass_hash'])
+    ) {
         $db->prepare('INSERT INTO login_attempts (ip, at) VALUES (?, ?)')->execute([$ip, time()]);
         fail('Check the email and password, then try again.', 401);
+    }
+    session_regenerate_id(true);
+    $_SESSION['user_id'] = (int) $user['id'];
+    json_out(['ok' => true]);
+}
+
+/** The public OAuth web client ID; overridable in config. The secret is never needed. */
+const GOOGLE_CLIENT_ID_DEFAULT =
+    '744697579975-1rm1mp8r9s7bc15k7lqba8stlgshbdo1.apps.googleusercontent.com';
+
+function google_client_id(): string
+{
+    return (string) (config()['google_client_id'] ?? GOOGLE_CLIENT_ID_DEFAULT);
+}
+
+/** Fetch and decode Google's claims for an ID token, or null when the request fails. */
+function google_verify_token(string $idToken): ?array
+{
+    // tokeninfo checks the signature and expiry and returns the claims. The URL is overridable so
+    // tests can point it at a stub.
+    $base = (string) (config()['google_tokeninfo_url'] ?? 'https://oauth2.googleapis.com/tokeninfo');
+    $url = $base . (str_contains($base, '?') ? '&' : '?') . 'id_token=' . urlencode($idToken);
+    $raw = http_get($url);
+    if ($raw === null) {
+        return null;
+    }
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : null;
+}
+
+/** Simple HTTPS GET, via curl when available, else the stream wrapper. Null on failure. */
+function http_get(string $url): ?string
+{
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_FOLLOWLOCATION => true,
+        ]);
+        $out = curl_exec($ch);
+        $ok = $out !== false && curl_getinfo($ch, CURLINFO_HTTP_CODE) < 400;
+        // No curl_close(): the handle frees itself when it goes out of scope, and the function is
+        // deprecated from PHP 8.5, where its warning would corrupt the response body.
+        return $ok ? (string) $out : null;
+    }
+    $ctx = stream_context_create(['http' => ['timeout' => 10, 'ignore_errors' => true]]);
+    $out = @file_get_contents($url, false, $ctx);
+    return $out === false ? null : $out;
+}
+
+/** Sign in with a Google ID token. Only accounts already on the team get in. */
+function api_login_google(): never
+{
+    start_session();
+    $db = db();
+    $ip = client_ip();
+    $db->prepare('DELETE FROM login_attempts WHERE at < ?')->execute([time() - 900]);
+    $count = $db->prepare('SELECT COUNT(*) FROM login_attempts WHERE ip = ?');
+    $count->execute([$ip]);
+    if ((int) $count->fetchColumn() >= 8) {
+        fail('Too many attempts. Wait fifteen minutes, then try again.', 429);
+    }
+    $record_attempt = function () use ($db, $ip): void {
+        $db->prepare('INSERT INTO login_attempts (ip, at) VALUES (?, ?)')->execute([$ip, time()]);
+    };
+
+    $token = (string) (body_json()['credential'] ?? '');
+    $claims = $token !== '' ? google_verify_token($token) : null;
+    $okIssuers = ['accounts.google.com', 'https://accounts.google.com'];
+    $verified = is_array($claims)
+        && hash_equals(google_client_id(), (string) ($claims['aud'] ?? ''))
+        && in_array((string) ($claims['iss'] ?? ''), $okIssuers, true)
+        && (int) ($claims['exp'] ?? 0) > time()
+        && filter_var($claims['email_verified'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    if (!$verified) {
+        $record_attempt();
+        fail('Google sign-in could not be verified. Try again.', 401);
+    }
+
+    $sub = (string) ($claims['sub'] ?? '');
+    $email = strtolower(trim((string) ($claims['email'] ?? '')));
+    $user = null;
+    if ($sub !== '') {
+        $stmt = $db->prepare('SELECT * FROM users WHERE google_sub = ?');
+        $stmt->execute([$sub]);
+        $user = $stmt->fetch() ?: null;
+    }
+    if (!$user && $email !== '') {
+        $stmt = $db->prepare('SELECT * FROM users WHERE google_email = ?');
+        $stmt->execute([$email]);
+        $user = $stmt->fetch() ?: null;
+    }
+    if (!$user) {
+        $record_attempt();
+        fail('This Google account is not on the VAR Box team. Ask Shem to add it.', 403);
+    }
+    // Remember the account id on first sign-in, so later sign-ins match on it even if the email moves.
+    if (($user['google_sub'] ?? null) === null || $user['google_sub'] === '') {
+        $db->prepare('UPDATE users SET google_sub = ?, google_email = COALESCE(google_email, ?) WHERE id = ?')
+            ->execute([$sub, $email, $user['id']]);
     }
     session_regenerate_id(true);
     $_SESSION['user_id'] = (int) $user['id'];

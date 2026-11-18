@@ -40,6 +40,7 @@ $view = match (true) {
     $path === '/' => 'landing',
     $path === '/login' => 'login',
     $path === '/setup' => 'setup',
+    $path === '/privacy' => 'privacy',
     $path === '/app' || str_starts_with($path, '/app/') => 'app',
     default => '404',
 };
@@ -57,5 +58,12 @@ if ($view === '404') {
 header('Content-Type: text/html; charset=utf-8');
 header('Cache-Control: no-cache');
 header('X-Frame-Options: SAMEORIGIN');
-header('Referrer-Policy: same-origin');
+if ($view === 'login') {
+    // Google Identity Services rejects the origin under a strict Referrer-Policy, and its popup
+    // needs to talk back to the opener.
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Cross-Origin-Opener-Policy: same-origin-allow-popups');
+} else {
+    header('Referrer-Policy: same-origin');
+}
 require __DIR__ . '/src/views/' . $view . '.php';

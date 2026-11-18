@@ -175,7 +175,7 @@
 
     <footer>
       <span>© <?= date('Y') ?> VAR Box</span>
-      <span>Decision support for boxing officials</span>
+      <span><a href="/privacy">Privacy</a> · Decision support for boxing officials</span>
     </footer>
   </div>
 </body>

@@ -419,21 +419,23 @@ async function teamPage() {
       <div class="card team-list">${users.map((u) => `
         <div class="team-row">
           <span class="avatar">${esc((u.name || u.login).slice(0, 1).toUpperCase())}</span>
-          <div class="who"><strong>${esc(u.name)}</strong><span class="muted mono">${esc(u.login)}</span></div>
-          <span class="muted when">${u.owner ? '<span class="chip">Owner</span>' : 'added ' + esc(fmtDate(u.created_at))}</span>
-          ${canManage && !u.owner ? `<button class="btn ghost sm danger" data-remove="${u.id}" data-name="${esc(u.name)}">Remove</button>` : ''}
+          <div class="who"><strong>${esc(u.name)}</strong><span class="muted mono">${u.google_email ? esc(u.google_email) : 'no Google email yet'}</span></div>
+          <span class="muted when">${u.owner ? '<span class="chip">Owner</span>' : 'added ' + esc(fmtDate(u.created_at))}${u.google_linked ? ' <span class="chip">Google</span>' : ''}</span>
+          <span class="row-actions">
+            ${canManage ? `<button class="btn ghost sm" data-setemail="${u.id}" data-name="${esc(u.name)}" data-email="${esc(u.google_email || '')}">${u.google_email ? 'Change email' : 'Set email'}</button>` : ''}
+            ${canManage && !u.owner ? `<button class="btn ghost sm danger" data-remove="${u.id}" data-name="${esc(u.name)}">Remove</button>` : ''}
+          </span>
         </div>`).join('')}</div>
       ${canManage ? `
       <form class="card team-add" autocomplete="off">
         <h3>Add a person</h3>
         <div class="team-fields">
           <div class="field"><label for="t-name">Name</label><input class="input" id="t-name" name="name" placeholder="Coach Oriek"></div>
-          <div class="field"><label for="t-login">Username or email</label><input class="input" id="t-login" name="login" required autocapitalize="none" spellcheck="false"></div>
-          <div class="field"><label for="t-pass">Password</label><input class="input" id="t-pass" name="password" type="password" minlength="8" required autocomplete="new-password"></div>
+          <div class="field"><label for="t-email">Google email</label><input class="input" id="t-email" name="google_email" type="email" required autocapitalize="none" spellcheck="false" placeholder="name@gmail.com"></div>
         </div>
         <div class="form-error" role="alert"></div>
         <div><button class="btn primary" type="submit">Add to team</button></div>
-        <p class="muted hint">They sign in with this username and password at varbox.guestpassvms.com/login.</p>
+        <p class="muted hint">They sign in at varbox.guestpassvms.com/login with this Google account. No password needed.</p>
       </form>` : ''}
       <div class="card team-add phones">
         <h3>Phones</h3>
@@ -463,6 +465,17 @@ async function teamPage() {
         draw();
       };
     });
+    body.querySelectorAll('[data-setemail]').forEach((b) => {
+      b.onclick = async () => {
+        const email = prompt(`Google email for ${b.dataset.name}`, b.dataset.email || '');
+        if (email === null) return;
+        try {
+          await api('users/' + b.dataset.setemail, { method: 'PATCH', body: { google_email: email.trim() } });
+          toast('Google email set');
+          draw();
+        } catch (x) { toast(x.message, 'error'); }
+      };
+    });
     body.querySelectorAll('[data-remove]').forEach((b) => {
       b.onclick = async () => {
         if (!(await confirmDialog(`Remove ${b.dataset.name}?`, 'Their sign-in stops working straight away. Analyses stay in place.', 'Remove'))) return;
@@ -470,7 +483,7 @@ async function teamPage() {
         draw();
       };
     });
-    const form = body.querySelector('.team-add');
+    const form = body.querySelector('form.team-add');
     if (form) {
       form.onsubmit = async (e) => {
         e.preventDefault();

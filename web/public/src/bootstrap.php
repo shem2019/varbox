@@ -139,6 +139,12 @@ function migrate(PDO $pdo): void
     ensure_column($pdo, 'uploads', 'sidecar', 'TEXT');
     ensure_column($pdo, 'uploads', 'phone_id', 'INTEGER');
     ensure_column($pdo, 'jobs', 'recording_id', 'INTEGER');
+    // Google sign-in: the account's email and stable id. A unique index allows many NULLs (a
+    // column added by ALTER cannot itself carry a UNIQUE constraint in SQLite).
+    ensure_column($pdo, 'users', 'google_email', 'TEXT');
+    ensure_column($pdo, 'users', 'google_sub', 'TEXT');
+    $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_email ON users(google_email)');
+    $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)');
 }
 
 /** Add a column if an earlier schema lacked it, so existing databases upgrade in place. */
