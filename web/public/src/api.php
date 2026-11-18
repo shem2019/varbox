@@ -485,6 +485,11 @@ function api_login_google(): never
         $stmt = $db->prepare('SELECT * FROM users WHERE google_email = ?');
         $stmt->execute([$email]);
         $user = $stmt->fetch() ?: null;
+        // A row already linked to one Google account accepts only that account, even when another
+        // account carries the same email. The owner unlinks it by setting the email again.
+        if ($user && (string) ($user['google_sub'] ?? '') !== '' && !hash_equals((string) $user['google_sub'], $sub)) {
+            $user = null;
+        }
     }
     if (!$user) {
         $record_attempt();

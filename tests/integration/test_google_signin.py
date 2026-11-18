@@ -54,6 +54,8 @@ def _claims_for(token: str) -> dict[str, object]:
         return {**base, "email_verified": "false"}
     if token == "stranger":
         return {**base, "email": "stranger@example.com", "sub": "sub-stranger"}
+    if token == "same-email-other-account":
+        return {**base, "sub": "sub-other"}
     return {"error": "invalid_token"}
 
 
@@ -184,6 +186,23 @@ def test_unknown_account_is_told_to_ask(site: str) -> None:
     r = _google(site, "stranger")
     assert r.status_code == 403
     assert "not on the VAR Box team" in r.json()["error"]
+
+
+def test_linked_member_refuses_another_account_with_the_same_email(site: str) -> None:
+    owner = _owner(site)
+    owner.post(site + "/api/users", json={"name": "Coach", "google_email": MEMBER_EMAIL})
+    assert _google(site, "member").status_code == 200
+
+    r = _google(site, "same-email-other-account")
+    assert r.status_code == 403
+    assert "not on the VAR Box team" in r.json()["error"]
+
+    # Setting the email again unlinks the row, so the new account can claim it.
+    users = owner.get(site + "/api/users").json()["users"]
+    coach = next(u for u in users if u["google_email"] == MEMBER_EMAIL)
+    reset = owner.patch(site + f"/api/users/{coach['id']}", json={"google_email": MEMBER_EMAIL})
+    assert reset.status_code == 200, reset.text
+    assert _google(site, "same-email-other-account").status_code == 200
 
 
 def test_owner_password_still_works(site: str) -> None:
