@@ -21,6 +21,9 @@ if (PHP_SAPI === 'cli-server' && $path !== '/' && is_file(__DIR__ . $path)) {
 if (str_starts_with($path, '/api/worker/')) {
     worker_api(substr($path, strlen('/api/worker/')), $method);
 }
+if (str_starts_with($path, '/api/phone/')) {
+    phone_api(substr($path, strlen('/api/phone/')), $method);
+}
 if (str_starts_with($path, '/api/')) {
     user_api(substr($path, strlen('/api/')), $method);
 }

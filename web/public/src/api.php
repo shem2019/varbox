@@ -282,13 +282,55 @@ function user_api(string $route, string $method): never
         ]);
         json_out(['job' => job_row(find('jobs', (int) $db->lastInsertId()))]);
     }
+    if (preg_match('#^jobs/(\d+)/process$#', $route, $m) && $method === 'POST') {
+        $row = find('jobs', (int) $m[1]);
+        if ($row['status'] !== 'pending') {
+            fail('This task is not waiting to be processed.', 409);
+        }
+        $db->prepare("UPDATE jobs SET status = 'queued', updated_at = ? WHERE id = ?")
+            ->execute([now(), $row['id']]);
+        json_out(['job' => job_row(find('jobs', (int) $row['id']))]);
+    }
     if (preg_match('#^jobs/(\d+)$#', $route, $m)) {
         $row = find('jobs', (int) $m[1]);
-        if ($method === 'DELETE' && in_array($row['status'], ['queued', 'failed', 'done'], true)) {
+        if ($method === 'DELETE' && in_array($row['status'], ['queued', 'failed', 'done', 'pending'], true)) {
             $db->prepare('DELETE FROM jobs WHERE id = ?')->execute([$row['id']]);
             json_out(['ok' => true]);
         }
         json_out(['job' => job_row($row)]);
+    }
+
+    // Phones: per-device upload tokens, added and revoked from the Team page.
+    if ($route === 'phones' && $method === 'GET') {
+        $rows = $db->query('SELECT id, name, created_at, last_used_at FROM phones ORDER BY id')->fetchAll();
+        json_out(['phones' => array_map(fn ($r) => [
+            'id' => (int) $r['id'],
+            'name' => $r['name'],
+            'created_at' => $r['created_at'],
+            'last_used_at' => $r['last_used_at'],
+        ], $rows)]);
+    }
+    if ($route === 'phones' && $method === 'POST') {
+        $name = trim((string) (body_json()['name'] ?? '')) ?: 'Phone';
+        $token = bin2hex(random_bytes(24));
+        $db->prepare('INSERT INTO phones (name, token_hash, created_by, created_at) VALUES (?, ?, ?, ?)')
+            ->execute([$name, hash('sha256', $token), $user['id'], now()]);
+        $id = (int) $db->lastInsertId();
+        // The token is shown once, inside a QR the app scans; only its hash is stored.
+        json_out([
+            'phone' => ['id' => $id, 'name' => $name],
+            'pairing' => json_encode([
+                'v' => 1,
+                'kind' => 'varbox-phone',
+                'url' => site_origin(),
+                'token' => $token,
+                'name' => $name,
+            ], JSON_UNESCAPED_SLASHES),
+        ]);
+    }
+    if (preg_match('#^phones/(\d+)$#', $route, $m) && $method === 'DELETE') {
+        $db->prepare('DELETE FROM phones WHERE id = ?')->execute([(int) $m[1]]);
+        json_out(['ok' => true]);
     }
 
     // Workers
@@ -386,7 +428,16 @@ function worker_api(string $route, string $method): never
         }
         $out = job_row($job);
         foreach (['a', 'b'] as $cam) {
-            $out["camera_$cam"] = $job["camera_$cam"] ? upload_row(find('uploads', (int) $job["camera_$cam"])) : null;
+            if (!$job["camera_$cam"]) {
+                $out["camera_$cam"] = null;
+                continue;
+            }
+            $upload = find('uploads', (int) $job["camera_$cam"]);
+            $row = upload_row($upload);
+            // The phone's sidecar (settings, clock offset, per-frame capture times) rides along so
+            // the GPU can align the cameras by timestamp as well as by audio.
+            $row['sidecar'] = $upload['sidecar'] ? json_decode($upload['sidecar'], true) : null;
+            $out["camera_$cam"] = $row;
         }
         json_out(['job' => $out]);
     }
@@ -452,4 +503,213 @@ function worker_api(string $route, string $method): never
         json_out(['ok' => true]);
     }
     fail('Unknown worker request.', 404);
+}
+
+/** The phone that owns the request, by its upload token; updates last seen. Rejects otherwise. */
+function require_phone(): array
+{
+    $given = preg_replace('/^Bearer\s+/i', '', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''));
+    if ($given === '') {
+        fail('Phone token missing.', 401);
+    }
+    $stmt = db()->prepare('SELECT * FROM phones WHERE token_hash = ?');
+    $stmt->execute([hash('sha256', (string) $given)]);
+    $phone = $stmt->fetch();
+    if (!$phone) {
+        fail('Phone token rejected.', 401);
+    }
+    db()->prepare('UPDATE phones SET last_used_at = ? WHERE id = ?')->execute([now(), $phone['id']]);
+    return $phone;
+}
+
+/** Seconds a sidecar covers, from its first and last frame capture times (shared clock). */
+function sidecar_duration(?string $sidecar): float
+{
+    if ($sidecar === null || $sidecar === '') {
+        return 0.0;
+    }
+    $data = json_decode($sidecar, true);
+    $frames = is_array($data) ? ($data['frames'] ?? null) : null;
+    if (!is_array($frames) || count($frames) < 2) {
+        return 0.0;
+    }
+    $first = (float) reset($frames);
+    $last = (float) end($frames);
+    return max(0.0, ($last - $first) / 1000.0);
+}
+
+/**
+ * Upload-only API for paired phones. Token-authenticated, it reuses the chunked upload code and
+ * groups a take's cameras under one recording. The last camera to arrive makes the pending task.
+ */
+function phone_api(string $route, string $method): never
+{
+    $phone = require_phone();
+    $db = db();
+    $in = $method === 'POST' && str_contains((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'json')
+        ? body_json() : [];
+
+    if ($route === 'ping') {
+        json_out(['ok' => true, 'phone' => ['id' => (int) $phone['id'], 'name' => $phone['name']]]);
+    }
+
+    // Register (or update) a recording, then open an upload slot for this phone's camera.
+    if ($route === 'uploads' && $method === 'POST') {
+        $recUid = trim((string) ($in['rec_uid'] ?? ''));
+        $letter = strtoupper(substr(trim((string) ($in['letter'] ?? '')), 0, 1));
+        if ($recUid === '' || !preg_match('/^[A-Z]$/', $letter)) {
+            fail('A recording id and a camera letter (A, B, …) are required.');
+        }
+        $rec = find_or_make_recording($recUid, $in);
+        $name = preg_replace('/[^A-Za-z0-9_.\-]+/', '_', (string) ($in['name'] ?? "r_{$letter}.mp4"));
+        $size = (int) ($in['size'] ?? 0);
+        if ($size <= 0) {
+            fail('Give the video size.');
+        }
+        $db->prepare('INSERT INTO uploads (name, size, phone_id, created_at) VALUES (?, ?, ?, ?)')
+            ->execute([$name, $size, $phone['id'], now()]);
+        $uploadId = (int) $db->lastInsertId();
+        $db->prepare(
+            'INSERT INTO recording_cameras (recording_id, letter, upload_id, device, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(recording_id, letter)
+             DO UPDATE SET upload_id = excluded.upload_id, device = excluded.device, status = \'receiving\''
+        )->execute([$rec['id'], $letter, $uploadId, (string) ($in['device'] ?? ''), now()]);
+        json_out(['recording_id' => $rec['rec_uid'], 'upload' => upload_row(find('uploads', $uploadId))]);
+    }
+
+    if (preg_match('#^uploads/(\d+)$#', $route, $m) && $method === 'PUT') {
+        $row = find('uploads', (int) $m[1]);
+        if ((int) $row['phone_id'] !== (int) $phone['id']) {
+            fail('That upload belongs to another phone.', 403);
+        }
+        $received = append_chunk(storage_path('uploads/' . $row['id'] . '.bin'), (int) ($_GET['offset'] ?? -1), (int) $row['size']);
+        $status = $received >= (int) $row['size'] ? 'ready' : 'receiving';
+        $db->prepare('UPDATE uploads SET received = ?, status = ? WHERE id = ?')->execute([$received, $status, $row['id']]);
+        if ($status === 'ready') {
+            $db->prepare("UPDATE recording_cameras SET status = 'ready' WHERE upload_id = ?")->execute([$row['id']]);
+            complete_recording_for_upload((int) $row['id']);
+        }
+        json_out(['received' => $received, 'status' => $status]);
+    }
+
+    // The sidecar JSON beside a phone's video: device, settings applied, clock offset, frame times.
+    if (preg_match('#^uploads/(\d+)/sidecar$#', $route, $m) && $method === 'PUT') {
+        $row = find('uploads', (int) $m[1]);
+        if ((int) $row['phone_id'] !== (int) $phone['id']) {
+            fail('That upload belongs to another phone.', 403);
+        }
+        $raw = file_get_contents('php://input') ?: '';
+        if (strlen($raw) > CHUNK_LIMIT || json_decode($raw) === null) {
+            fail('Send the sidecar as one JSON body.');
+        }
+        $db->prepare('UPDATE uploads SET sidecar = ? WHERE id = ?')->execute([$raw, $row['id']]);
+        json_out(['ok' => true]);
+    }
+
+    fail('Unknown phone request.', 404);
+}
+
+function find_or_make_recording(string $recUid, array $in): array
+{
+    $db = db();
+    $stmt = $db->prepare('SELECT * FROM recordings WHERE rec_uid = ?');
+    $stmt->execute([$recUid]);
+    $rec = $stmt->fetch();
+    if ($rec) {
+        return $rec;
+    }
+    $fps = in_array((int) ($in['fps'] ?? 30), [30, 60], true) ? (int) $in['fps'] : 30;
+    $expected = max(1, min(6, (int) ($in['expected_cameras'] ?? 2)));
+    $title = trim((string) ($in['title'] ?? '')) ?: 'Recording ' . date('j M Y, H:i');
+    $db->prepare(
+        'INSERT INTO recordings (rec_uid, rig, round, title, fps, expected_cameras, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )->execute([
+        $recUid, (string) ($in['rig'] ?? ''), (string) ($in['round'] ?? ''),
+        $title, $fps, $expected, now(), now(),
+    ]);
+    return find('recordings', (int) $db->lastInsertId());
+}
+
+/** After a camera finishes, make the pending task once every expected camera has arrived. */
+function complete_recording_for_upload(int $uploadId): void
+{
+    $db = db();
+    $stmt = $db->prepare('SELECT recording_id FROM recording_cameras WHERE upload_id = ?');
+    $stmt->execute([$uploadId]);
+    $recId = $stmt->fetchColumn();
+    if ($recId === false) {
+        return;
+    }
+    $rec = find('recordings', (int) $recId);
+    if ($rec['status'] !== 'open') {
+        return;
+    }
+    $cams = $db->prepare('SELECT * FROM recording_cameras WHERE recording_id = ? ORDER BY letter');
+    $cams->execute([$rec['id']]);
+    $cams = $cams->fetchAll();
+    $ready = array_filter($cams, fn ($c) => $c['status'] === 'ready');
+    if (count($ready) < (int) $rec['expected_cameras']) {
+        return;
+    }
+    create_pending_job($rec, array_values($ready));
+}
+
+/** Build the pending job from a recording's ready cameras and email Shem to start the GPU. */
+function create_pending_job(array $rec, array $cams): void
+{
+    $db = db();
+    // The job schema carries two cameras; take the first two by letter (A, B).
+    $a = $cams[0];
+    $b = $cams[1] ?? null;
+    $db->prepare(
+        'INSERT INTO jobs (title, camera_a, camera_b, fps, status, recording_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, \'pending\', ?, ?, ?)'
+    )->execute([
+        $rec['title'], (int) $a['upload_id'], $b ? (int) $b['upload_id'] : null,
+        (int) $rec['fps'], (int) $rec['id'], now(), now(),
+    ]);
+    $jobId = (int) $db->lastInsertId();
+    $db->prepare("UPDATE recordings SET status = 'ready', job_id = ?, updated_at = ? WHERE id = ?")
+        ->execute([$jobId, now(), $rec['id']]);
+
+    [$subject, $body] = pending_job_email($rec, $cams, $jobId);
+    send_mail($subject, $body);
+}
+
+/** Subject and body for the "ready to process" email. */
+function pending_job_email(array $rec, array $cams, int $jobId): array
+{
+    $lines = [];
+    foreach ($cams as $c) {
+        $u = find('uploads', (int) $c['upload_id']);
+        $dur = sidecar_duration($u['sidecar']);
+        $parts = ["camera {$c['letter']}"];
+        if ($c['device']) {
+            $parts[] = (string) $c['device'];
+        }
+        $parts[] = number_format((int) $u['size'] / 1e6, 1) . ' MB';
+        if ($dur > 0) {
+            $parts[] = gmdate('i:s', (int) round($dur)) . ' long';
+        }
+        $lines[] = '  - ' . implode(', ', $parts);
+    }
+    $token = (string) (config()['worker_token'] ?? 'WORKER_TOKEN');
+    $origin = site_origin();
+    $body = implode("\n", [
+        "A new recording is ready to process on VAR Box.",
+        '',
+        $rec['title'] . ' (' . (int) $rec['fps'] . ' fps)',
+        implode("\n", $lines),
+        '',
+        'Open Pending tasks and press Process:',
+        "  $origin/app/jobs",
+        '',
+        'The GPU worker claims it once it is queued. Start the worker with:',
+        "  export VARBOX_WORKER_TOKEN=$token",
+        "  python -m boxing_analytics.mesh4d.worker serve --server $origin",
+        '',
+    ]);
+    return ['VAR Box: ' . $rec['title'] . ' ready to process', $body];
 }

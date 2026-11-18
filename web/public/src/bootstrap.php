@@ -100,7 +100,57 @@ function migrate(PDO $pdo): void
             ip TEXT NOT NULL,
             at INTEGER NOT NULL
         );
+        -- Phones sign in with their own upload-only token (stored hashed); revoking deletes the row.
+        CREATE TABLE IF NOT EXISTS phones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_by INTEGER,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT
+        );
+        -- One recording ties the cameras of a single take together.
+        CREATE TABLE IF NOT EXISTS recordings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rec_uid TEXT NOT NULL UNIQUE,
+            rig TEXT,
+            round TEXT,
+            title TEXT,
+            fps INTEGER NOT NULL DEFAULT 30,
+            expected_cameras INTEGER NOT NULL DEFAULT 2,
+            status TEXT NOT NULL DEFAULT 'open',
+            job_id INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS recording_cameras (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recording_id INTEGER NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+            letter TEXT NOT NULL,
+            upload_id INTEGER REFERENCES uploads(id),
+            device TEXT,
+            status TEXT NOT NULL DEFAULT 'receiving',
+            created_at TEXT NOT NULL,
+            UNIQUE(recording_id, letter)
+        );
     SQL);
+    // Columns added after the first release: the sidecar beside each phone video, the phone that
+    // sent an upload, and the recording a job came from.
+    ensure_column($pdo, 'uploads', 'sidecar', 'TEXT');
+    ensure_column($pdo, 'uploads', 'phone_id', 'INTEGER');
+    ensure_column($pdo, 'jobs', 'recording_id', 'INTEGER');
+}
+
+/** Add a column if an earlier schema lacked it, so existing databases upgrade in place. */
+function ensure_column(PDO $pdo, string $table, string $column, string $type): void
+{
+    $cols = $pdo->query("PRAGMA table_info($table)")->fetchAll();
+    foreach ($cols as $c) {
+        if ($c['name'] === $column) {
+            return;
+        }
+    }
+    $pdo->exec("ALTER TABLE $table ADD COLUMN $column $type");
 }
 
 function now(): string
@@ -285,3 +335,18 @@ function e(string $value): string
 {
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
+
+/** The site's own origin, for QR codes a phone scans. config()['site_url'] overrides it. */
+function site_origin(): string
+{
+    $url = (string) (config()['site_url'] ?? '');
+    if ($url !== '') {
+        return rtrim($url, '/');
+    }
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+    $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
+    return ($https ? 'https' : 'http') . '://' . $host;
+}
+
+require_once __DIR__ . '/mail.php';

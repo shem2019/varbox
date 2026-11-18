@@ -186,3 +186,16 @@ dialog p { margin: 0 0 18px; color: var(--ink-2); }
   .team-row { grid-template-columns: 36px 1fr auto; }
   .team-row .when { display: none; }
 }
+
+/* Pending tasks and phone pairing */
+.section-head { font-size: 18px; margin: 4px 0 10px; }
+.pending-tasks { display: grid; gap: 14px; margin-bottom: 22px; }
+.card.job.pending { border-left: 3px solid var(--accent, #6a8dff); }
+.phone-list { display: grid; }
+.phone-list .team-row + .team-row { border-top: 1px solid var(--line); }
+dialog.qr-dialog { border: 0; border-radius: 14px; padding: 22px; max-width: 360px; background: var(--surface); color: var(--ink); box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+dialog.qr-dialog::backdrop { background: rgba(0,0,0,.5); }
+dialog.qr-dialog .qr { display: grid; place-items: center; padding: 12px 0; }
+dialog.qr-dialog .qr svg { width: 220px; height: 220px; background: #fff; padding: 8px; border-radius: 8px; }
+dialog.qr-dialog textarea { margin-top: 8px; font-size: 12px; }
+dialog.qr-dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }

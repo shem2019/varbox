@@ -330,29 +330,49 @@ async function jobsPage() {
   main.innerHTML = `<div class="page-head"><div><h1>Jobs</h1><div class="sub">Analyses in progress, reported live by the GPU.</div></div>
     <a class="btn" href="/app/import" data-link>Import videos</a></div><div class="jobs"><div class="card skeleton" style="height:180px"></div></div>`;
   const box = main.querySelector('.jobs');
+  const pendingCard = (j, online) => `<article class="card job pending">
+      <div class="job-head"><div><h3>${esc(j.title)}</h3><div class="muted" style="font-size:13px;margin-top:4px">${j.camera_b ? 'Two cameras' : 'One camera'} · ${j.fps} fps · uploaded ${ago(j.created_at)}</div></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn sm primary" data-process="${j.id}">Process</button>
+          <button class="btn sm ghost" data-del="${j.id}">Delete</button></div></div>
+      <div class="msg">${online ? 'A GPU worker is online and will pick this up once you press Process.' : 'No GPU worker is online yet — start one, then press Process.'}</div>
+    </article>`;
+  const jobCard = (j) => {
+    const at = STAGES.findIndex(([k]) => k === j.stage);
+    const steps = STAGES.map(([k, l], i) => {
+      const cls = j.status === 'done' || (at >= 0 && i < at) ? 'done' : i === at && j.status === 'running' ? 'now' : '';
+      return `<div class="s ${cls}"><i></i><span>${l}</span></div>`;
+    }).join('');
+    const pct = j.pct != null && j.status === 'running' ? ` · ${Math.round(j.pct * 100)}%` : '';
+    return `<article class="card job">
+      <div class="job-head"><div><h3>${esc(j.title)}</h3><div class="muted" style="font-size:13px;margin-top:4px">${j.camera_b ? 'Two cameras' : 'One camera'} · ${j.fps} fps · added ${ago(j.created_at)}${j.worker ? ' · on ' + esc(j.worker) : ''}</div></div>
+        <div style="display:flex;gap:8px;align-items:center"><span class="state ${j.status}">${j.status === 'queued' ? 'waiting for a GPU' : j.status}${pct}</span>
+        ${j.analysis_id ? `<a class="btn sm primary" href="/app/analysis/${j.analysis_id}" data-link>Open analysis</a>` : ''}
+        ${['queued', 'failed', 'done'].includes(j.status) ? `<button class="btn sm ghost" data-del="${j.id}">Remove</button>` : ''}</div></div>
+      <div class="stepper" style="--n:${STAGES.length}">${steps}</div>
+      ${j.status === 'failed' ? `<div class="msg" style="color:var(--red)">${esc(j.error || 'Processing stopped')}</div>` : j.message ? `<div class="msg">${esc(j.message)}</div>` : ''}
+      ${j.previews.length ? `<div class="previews">${j.previews.map((p) => `<img src="${p}?t=${Date.parse(j.updated_at)}" alt="Seed preview">`).join('')}</div>` : ''}
+    </article>`;
+  };
   const draw = async () => {
-    const { jobs } = await api('jobs');
+    const [{ jobs }, { workers }] = await Promise.all([api('jobs'), api('workers')]);
+    const online = workers.some((w) => w.online);
+    const pending = jobs.filter((j) => j.status === 'pending');
+    const queue = jobs.filter((j) => j.status !== 'pending');
     if (!jobs.length) {
       box.innerHTML = `<div class="card empty"><h3>The queue is clear</h3><p>Import two phone recordings to start an analysis. Progress shows here, stage by stage.</p><a class="btn primary" href="/app/import" data-link>Import videos</a></div>`;
       return;
     }
-    box.innerHTML = jobs.map((j) => {
-      const at = STAGES.findIndex(([k]) => k === j.stage);
-      const steps = STAGES.map(([k, l], i) => {
-        const cls = j.status === 'done' || (at >= 0 && i < at) ? 'done' : i === at && j.status === 'running' ? 'now' : '';
-        return `<div class="s ${cls}"><i></i><span>${l}</span></div>`;
-      }).join('');
-      const pct = j.pct != null && j.status === 'running' ? ` · ${Math.round(j.pct * 100)}%` : '';
-      return `<article class="card job">
-        <div class="job-head"><div><h3>${esc(j.title)}</h3><div class="muted" style="font-size:13px;margin-top:4px">${j.camera_b ? 'Two cameras' : 'One camera'} · ${j.fps} fps · added ${ago(j.created_at)}${j.worker ? ' · on ' + esc(j.worker) : ''}</div></div>
-          <div style="display:flex;gap:8px;align-items:center"><span class="state ${j.status}">${j.status === 'queued' ? 'waiting for a GPU' : j.status}${pct}</span>
-          ${j.analysis_id ? `<a class="btn sm primary" href="/app/analysis/${j.analysis_id}" data-link>Open analysis</a>` : ''}
-          ${['queued', 'failed', 'done'].includes(j.status) ? `<button class="btn sm ghost" data-del="${j.id}">Remove</button>` : ''}</div></div>
-        <div class="stepper" style="--n:${STAGES.length}">${steps}</div>
-        ${j.status === 'failed' ? `<div class="msg" style="color:var(--red)">${esc(j.error || 'Processing stopped')}</div>` : j.message ? `<div class="msg">${esc(j.message)}</div>` : ''}
-        ${j.previews.length ? `<div class="previews">${j.previews.map((p) => `<img src="${p}?t=${Date.parse(j.updated_at)}" alt="Seed preview">`).join('')}</div>` : ''}
-      </article>`;
-    }).join('');
+    box.innerHTML =
+      (pending.length ? `<div class="pending-tasks"><h2 class="section-head">Pending tasks</h2>${pending.map((j) => pendingCard(j, online)).join('')}</div>` : '') +
+      (queue.length ? queue.map(jobCard).join('') : (pending.length ? '' : ''));
+    box.querySelectorAll('[data-process]').forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        try { await api('jobs/' + b.dataset.process + '/process', { method: 'POST' }); toast('Queued. The GPU picks it up next.'); draw(); }
+        catch (err) { toast(err.message, 'error'); b.disabled = false; }
+      };
+    });
     box.querySelectorAll('[data-del]').forEach((b) => { b.onclick = async () => { await api('jobs/' + b.dataset.del, { method: 'DELETE' }); draw(); }; });
   };
   await draw();
@@ -362,11 +382,39 @@ async function jobsPage() {
 
 // ------------------------------------------------------------------ GPU
 // ------------------------------------------------------------------ team
+function showPairingQr(pairing, name) {
+  const d = document.createElement('dialog');
+  d.className = 'qr-dialog';
+  let qr = '';
+  try {
+    if (window.qrcode) {
+      const code = window.qrcode(0, 'M');
+      code.addData(pairing);
+      code.make();
+      qr = `<div class="qr">${code.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div>`;
+    }
+  } catch (err) { qr = ''; }
+  d.innerHTML = `<h3>Add ${esc(name)}</h3>
+    <p class="muted">Open VAR Box Camera on the phone and scan this to sign it in.</p>
+    ${qr || '<p class="muted">Copy the pairing text below into the app.</p>'}
+    <textarea class="input mono" rows="3" readonly style="width:100%;resize:none">${esc(pairing)}</textarea>
+    <p class="muted" style="font-size:13px">The token is shown only now. Lose it, and you remove the phone and add it again.</p>
+    <div class="actions"><button class="btn" value="copy">Copy text</button><button class="btn primary" value="ok">Done</button></div>`;
+  document.body.append(d);
+  d.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.value === 'copy') { try { await navigator.clipboard.writeText(pairing); toast('Pairing text copied'); } catch (err) { /* select by hand */ } return; }
+    d.close(); d.remove();
+  });
+  d.showModal();
+}
+
 async function teamPage() {
   main.innerHTML = `<div class="page-head"><div><h1>Team</h1><div class="sub">Everyone who signs in to this dashboard sees every analysis.</div></div></div><div class="team-body"></div>`;
   const body = main.querySelector('.team-body');
   const draw = async () => {
-    const { users, can_manage: canManage } = await api('users');
+    const [{ users, can_manage: canManage }, { phones }] = await Promise.all([api('users'), api('phones')]);
     body.innerHTML = `
       <div class="card team-list">${users.map((u) => `
         <div class="team-row">
@@ -386,7 +434,35 @@ async function teamPage() {
         <div class="form-error" role="alert"></div>
         <div><button class="btn primary" type="submit">Add to team</button></div>
         <p class="muted hint">They sign in with this username and password at varbox.guestpassvms.com/login.</p>
-      </form>` : ''}`;
+      </form>` : ''}
+      <div class="card team-add phones">
+        <h3>Phones</h3>
+        <p class="muted" style="margin-top:0">Each phone in the camera rig signs in with its own upload token. Add a phone, scan the QR in VAR Box Camera, and its recordings upload here.</p>
+        <div class="phone-list">${phones.length ? phones.map((p) => `
+          <div class="team-row">
+            <span class="avatar">📷</span>
+            <div class="who"><strong>${esc(p.name)}</strong><span class="muted mono">${p.last_used_at ? 'last upload ' + esc(ago(p.last_used_at)) : 'not used yet'}</span></div>
+            <span class="muted when">added ${esc(fmtDate(p.created_at))}</span>
+            <button class="btn ghost sm danger" data-phone-remove="${p.id}" data-name="${esc(p.name)}">Revoke</button>
+          </div>`).join('') : '<p class="muted">No phones yet.</p>'}</div>
+        <div style="margin-top:12px"><button class="btn primary" id="add-phone">Add a phone</button></div>
+      </div>`;
+    body.querySelector('#add-phone').onclick = async () => {
+      const name = prompt('Name this phone', 'Phone ' + String.fromCharCode(65 + phones.length));
+      if (name === null) return;
+      try {
+        const res = await api('phones', { method: 'POST', body: { name: name.trim() || 'Phone' } });
+        showPairingQr(res.pairing, res.phone.name);
+        draw();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    body.querySelectorAll('[data-phone-remove]').forEach((b) => {
+      b.onclick = async () => {
+        if (!(await confirmDialog(`Revoke ${b.dataset.name}?`, 'This phone can no longer upload. Pair it again to restore access.', 'Revoke'))) return;
+        await api('phones/' + b.dataset.phoneRemove, { method: 'DELETE' }).catch((err) => toast(err.message, 'error'));
+        draw();
+      };
+    });
     body.querySelectorAll('[data-remove]').forEach((b) => {
       b.onclick = async () => {
         if (!(await confirmDialog(`Remove ${b.dataset.name}?`, 'Their sign-in stops working straight away. Analyses stay in place.', 'Remove'))) return;

@@ -14,6 +14,7 @@
 </script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js" defer></script>
 <?= module_import_map() ?>
 <script type="module" src="<?= asset('app.js') ?>"></script>
 </head>
