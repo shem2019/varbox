@@ -89,9 +89,7 @@ def _owner_session(base: str) -> requests.Session:
     return s
 
 
-def _upload_camera(
-    base: str, token: str, rec_uid: str, letter: str, frames_ms: list[int]
-) -> int:
+def _upload_camera(base: str, token: str, rec_uid: str, letter: str, frames_ms: list[int]) -> int:
     phone = {"Authorization": f"Bearer {token}"}
     body = b"\x00" * 2048  # stand-in for the video bytes
     r = requests.post(
@@ -167,14 +165,21 @@ def test_phone_recording_becomes_pending_task_and_worker_claim_has_sidecars(
     assert "ready to process" in log and "not configured" in log
 
     # Workers claim only queued jobs; pressing Process queues this one.
-    worker_headers = {"Authorization": f"Bearer {site['worker_token']}", "Content-Type": "application/json"}
-    claimed = requests.post(base + "/api/worker/claim", headers=worker_headers, json={"name": "gpu"})
-    assert claimed.json()["job"] is None, "pending job is not claimable"
+    worker_headers = {
+        "Authorization": f"Bearer {site['worker_token']}",
+        "Content-Type": "application/json",
+    }
+
+    def claim() -> dict | None:
+        r = requests.post(base + "/api/worker/claim", headers=worker_headers, json={"name": "gpu"})
+        return r.json()["job"]
+
+    assert claim() is None, "pending job is not claimable"
 
     r = owner.post(base + f"/api/jobs/{job['id']}/process")
     assert r.status_code == 200 and r.json()["job"]["status"] == "queued", r.text
 
-    claimed = requests.post(base + "/api/worker/claim", headers=worker_headers, json={"name": "gpu"}).json()["job"]
+    claimed = claim()
     assert claimed is not None
     assert claimed["camera_a"]["sidecar"]["frames"] == frames_a
     assert claimed["camera_b"]["sidecar"]["frames"] == frames_b
