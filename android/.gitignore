@@ -1,0 +1,13 @@
+# Android / Gradle build artefacts and machine-specific or secret files.
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# Firebase config belongs to Shem's Firebase project, not the repo.
+app/google-services.json
+
+# Keystores
+*.jks
+*.keystore

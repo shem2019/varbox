@@ -1,0 +1,44 @@
+rules_version = '2';
+
+// Only the devices that belong to a rig may read or write it. A device joins by adding its own
+// anonymous uid to memberIds; after that it is a member and can read the rig, write its own member
+// document, and (as any member) update the shared settings and record command.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rigs/{rigId} {
+      function existing() {
+        return resource.data;
+      }
+      function incoming() {
+        return request.resource.data;
+      }
+      function isMember() {
+        return request.auth != null && request.auth.uid in existing().memberIds;
+      }
+      function isJoining() {
+        return request.auth != null
+          && !(request.auth.uid in existing().memberIds)
+          && request.auth.uid in incoming().memberIds
+          && incoming().memberIds.size() == existing().memberIds.size() + 1
+          && incoming().diff(existing()).affectedKeys().hasOnly(['memberIds']);
+      }
+
+      allow read: if isMember();
+      allow create: if request.auth != null
+        && incoming().directorId == request.auth.uid
+        && request.auth.uid in incoming().memberIds;
+      allow update: if isMember() || isJoining();
+      allow delete: if false;
+
+      match /members/{memberId} {
+        function rigMembers() {
+          return get(/databases/$(database)/documents/rigs/$(rigId)).data.memberIds;
+        }
+        allow read: if request.auth != null && request.auth.uid in rigMembers();
+        allow write: if request.auth != null
+          && request.auth.uid == memberId
+          && request.auth.uid in rigMembers();
+      }
+    }
+  }
+}
