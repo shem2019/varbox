@@ -236,10 +236,19 @@ def run_job(dash: Dashboard, job: dict[str, Any], workdir: Path, repo: Path) -> 
     job_id = int(job["id"])
     jdir = workdir / f"job_{job_id}"
     inputs = {}
+    sidecars: dict[str, Path] = {}
     for cam in ("A", "B"):
         upload = job.get(f"camera_{cam.lower()}")
         if not upload:
             continue
+        # The phone's sidecar (per-frame shared-clock times) comes down with the claim; keep it
+        # beside the video so the pipeline can align the cameras by timestamp.
+        sidecar = upload.get("sidecar")
+        if sidecar:
+            side_path = jdir / f"camera_{cam}.sidecar.json"
+            side_path.parent.mkdir(parents=True, exist_ok=True)
+            side_path.write_text(json.dumps(sidecar), encoding="utf-8")
+            sidecars[cam] = side_path
         dest = jdir / "raw" / f"{cam}_{upload['name']}"
         if not dest.exists():
             dash.call(
@@ -271,6 +280,10 @@ def run_job(dash: Dashboard, job: dict[str, Any], workdir: Path, repo: Path) -> 
     ]  # fmt: skip
     if "B" in inputs:
         args += ["--video-b", str(inputs["B"])]
+    if "A" in sidecars:
+        args += ["--sidecar-a", str(sidecars["A"])]
+    if "B" in sidecars:
+        args += ["--sidecar-b", str(sidecars["B"])]
     stop = threading.Event()
     tail = threading.Thread(
         target=_tail_progress, args=(dash, job_id, run_dir / "run.log", stop), daemon=True

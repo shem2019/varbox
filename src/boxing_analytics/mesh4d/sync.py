@@ -1,8 +1,18 @@
-"""Time alignment between two cameras from their audio tracks (a clap, the bell, crowd noise)."""
+"""Time alignment between two cameras.
+
+Two cameras can be lined up two ways. When the phones recorded with the VAR Box Camera rig, each
+leaves a sidecar of per-frame capture times on one shared clock, and the offset between them is
+exact. Older footage, or a phone whose sidecar is missing, is lined up from the audio instead (a
+clap, the bell, crowd noise). When both are available the pipeline uses the sidecar and keeps the
+audio answer as a cross-check.
+"""
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -133,3 +143,91 @@ def best_offset(audio_a: NDArray, audio_b: NDArray, sample_rate: int) -> SyncRes
 def map_frame(frame_a: int, fps_a: float, fps_b: float, offset_s: float) -> int:
     """Frame index in B showing the same instant as frame_a in A."""
     return int(round((frame_a / fps_a + offset_s) * fps_b))
+
+
+def load_sidecar(path: str | Path | None) -> dict[str, Any] | None:
+    """Read a camera's sidecar JSON, or None when it is missing or unreadable."""
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _frame_times_ms(sidecar: dict[str, Any]) -> list[float]:
+    """Per-frame capture times (shared-clock milliseconds) from a sidecar."""
+    frames = sidecar.get("frames")
+    if not isinstance(frames, list):
+        return []
+    return [float(t) for t in frames]
+
+
+def sidecar_offset(
+    sidecar_a: dict[str, Any], sidecar_b: dict[str, Any], *, fps: float = 30.0
+) -> SyncResult:
+    """Offset from the sidecars' shared-clock frame times: time in B = time in A + offset.
+
+    The sidecars record each frame's capture time on one shared clock (SNTP), so frame zero of
+    each camera is already an absolute instant; the offset is the gap between them. Confidence is
+    how small the combined clock uncertainty is next to a frame — above ~6 the two frame clocks
+    agree inside half a frame.
+    """
+    frames_a = _frame_times_ms(sidecar_a)
+    frames_b = _frame_times_ms(sidecar_b)
+    if not frames_a or not frames_b:
+        return SyncResult(0.0, 0.0, "sidecar-empty")
+    offset_s = (frames_a[0] - frames_b[0]) / 1000.0
+    unc_a = max(float(sidecar_a.get("clock_uncertainty_ms", 2.0)), 1e-3)
+    unc_b = max(float(sidecar_b.get("clock_uncertainty_ms", 2.0)), 1e-3)
+    combined_ms = math.hypot(unc_a, unc_b)
+    frame_ms = 1000.0 / max(fps, 1.0)
+    confidence = min(1000.0, frame_ms / combined_ms)
+    return SyncResult(offset_s, confidence, "sidecar-timestamps")
+
+
+def frames_apart(a: SyncResult, b: SyncResult, fps: float) -> float:
+    """How many frames separate two offset estimates, for flagging disagreement."""
+    return abs(a.offset_s - b.offset_s) * max(fps, 1.0)
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """The offset the pipeline will use, with both estimates kept for the log and sync.json."""
+
+    chosen: SyncResult
+    sidecar: SyncResult | None
+    audio: SyncResult | None
+    frames_apart: float | None
+    agree: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.chosen.to_dict(),
+            "sidecar": self.sidecar.to_dict() if self.sidecar else None,
+            "audio": self.audio.to_dict() if self.audio else None,
+            "frames_apart": self.frames_apart,
+            "agree": self.agree,
+        }
+
+
+def reconcile(
+    sidecar: SyncResult | None, audio: SyncResult | None, *, fps: float
+) -> Reconciliation:
+    """Pick the offset to use and compare the two methods.
+
+    The sidecar wins when it has real timestamps; the audio offset stays as a second opinion. With
+    only one method available that method is used. Differences above one frame are flagged through
+    `agree` so the caller can warn.
+    """
+    use_sidecar = sidecar is not None and sidecar.confidence > 0
+    apart = frames_apart(sidecar, audio, fps) if sidecar is not None and audio is not None else None
+    agree = apart is None or apart <= 1.0
+    chosen = sidecar if use_sidecar else audio
+    if chosen is None:
+        chosen = SyncResult(0.0, 0.0, "none")
+    return Reconciliation(chosen, sidecar, audio, apart, agree)

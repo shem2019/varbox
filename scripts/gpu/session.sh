@@ -50,14 +50,21 @@ for v in "${VIDEOS[@]}"; do
     -c:a aac -ar 48000 -ac 1 -movflags +faststart "$out.tmp.mp4" && mv "$out.tmp.mp4" "$out"
 done
 
-# Pair videos into rounds: rN_A / rN_B, or the only two files.
-declare -A ROUND_A ROUND_B
+# Pair videos into rounds: rN_A / rN_B, or the only two files. A sidecar named like the raw video
+# (r1_A.json) carries the phone's per-frame shared-clock times; when present it rides along so the
+# pipeline lines the cameras up by timestamp and both share one timeline.
+declare -A ROUND_A ROUND_B SIDE_A SIDE_B
 for v in "$PREP"/*.mp4; do
   name="$(basename "$v" .mp4)"
+  side="$RAW/$name.json"
   if [[ "${name,,}" =~ ^(r[0-9]+|round[0-9]+|calib)[_-]?([ab])$ ]]; then
     key="${BASH_REMATCH[1]}"; cam="${BASH_REMATCH[2]}"
     [ "$key" = "calib" ] && continue
-    if [ "$cam" = "a" ]; then ROUND_A[$key]="$v"; else ROUND_B[$key]="$v"; fi
+    if [ "$cam" = "a" ]; then
+      ROUND_A[$key]="$v"; [ -f "$side" ] && SIDE_A[$key]="$side"
+    else
+      ROUND_B[$key]="$v"; [ -f "$side" ] && SIDE_B[$key]="$side"
+    fi
   fi
 done
 if [ "${#ROUND_A[@]}" -eq 0 ]; then
@@ -70,7 +77,9 @@ process_round() {
   local key=$1
   local run_dir="runs/$SESSION/$key" dest r
   args=(--run-dir "$run_dir" --video-a "${ROUND_A[$key]}" --start-s 0 --duration-s 0 --roles red,blue --seed-scan-s 20)
+  [ -n "${SIDE_A[$key]:-}" ] && args+=(--sidecar-a "${SIDE_A[$key]}")
   [ -n "${ROUND_B[$key]:-}" ] && args+=(--video-b "${ROUND_B[$key]}")
+  [ -n "${SIDE_B[$key]:-}" ] && args+=(--sidecar-b "${SIDE_B[$key]}")
   log "Round $key: $(basename "${ROUND_A[$key]}")${ROUND_B[$key]:+ + $(basename "${ROUND_B[$key]}")}"
   python -m boxing_analytics.mesh4d.cli run "${args[@]}"
   if [ -f models/varbox-videomae-cuda/best/model.safetensors ]; then

@@ -95,23 +95,55 @@ def run(args: argparse.Namespace) -> int:
     views["A"] = {"info": info_a, "start": start_a, "stop": stop_a, "seeds": args.seed_a}
     sync_meta: dict[str, Any] | None = None
     if args.video_b:
-        from boxing_analytics.mesh4d.sync import SyncResult, best_offset, map_frame
+        from boxing_analytics.mesh4d.sync import (
+            SyncResult,
+            best_offset,
+            load_sidecar,
+            map_frame,
+            reconcile,
+            sidecar_offset,
+        )
         from boxing_analytics.mesh4d.video_io import extract_audio
 
         info_b = probe(args.video_b)
         sync_path = run_dir / "sync.json"
         if args.offset_s is not None:
             sync = SyncResult(float(args.offset_s), float("inf"), "manual")
+            sync_path.write_text(safe_dumps(sync.to_dict(), indent=2), encoding="utf-8")
         elif sync_path.exists():
             payload = json.loads(sync_path.read_text(encoding="utf-8"))
             sync = SyncResult(payload["offset_s"], payload["confidence"], payload["method"])
         else:
+            # The sidecars give an exact offset from shared-clock frame times; the audio is a
+            # second opinion. Either alone is enough; both let us flag a disagreement.
+            side_a = load_sidecar(args.sidecar_a)
+            side_b = load_sidecar(args.sidecar_b)
+            sidecar = (
+                sidecar_offset(side_a, side_b, fps=info_a.fps)
+                if side_a is not None and side_b is not None
+                else None
+            )
+            audio = None
             audio_a = extract_audio(args.video_a, sample_rate=16000)
             audio_b = extract_audio(args.video_b, sample_rate=16000)
-            if audio_a is None or audio_b is None:
-                raise RuntimeError("these videos carry no audio to sync from; pass --offset-s")
-            sync = best_offset(audio_a, audio_b, 16000)
-        sync_path.write_text(safe_dumps(sync.to_dict(), indent=2), encoding="utf-8")
+            if audio_a is not None and audio_b is not None:
+                audio = best_offset(audio_a, audio_b, 16000)
+            if sidecar is None and audio is None:
+                raise RuntimeError("no sidecars and no audio to sync from; pass --offset-s")
+            rec = reconcile(sidecar, audio, fps=info_a.fps)
+            sync = rec.chosen
+            for label, est in (("sidecar", sidecar), ("audio  ", audio)):
+                if est is not None:
+                    log(
+                        f"sync: {label} B = A + {est.offset_s:.3f}s "
+                        f"({est.method}, confidence {est.confidence:.1f})"
+                    )
+            if rec.frames_apart is not None and not rec.agree:
+                log(
+                    f"sync: sidecar and audio disagree by {rec.frames_apart:.1f} frames; "
+                    f"using {sync.method}"
+                )
+            sync_path.write_text(safe_dumps(rec.to_dict(), indent=2), encoding="utf-8")
         log(f"sync: B = A + {sync.offset_s:.3f}s ({sync.method}, confidence {sync.confidence:.1f})")
         if sync.confidence < 6:
             log("sync: low confidence; check run_dir/sync.json or pass --offset-s")
@@ -580,6 +612,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--video-a", required=True)
     r.add_argument("--video-b")
     r.add_argument("--offset-s", type=float, help="manual sync: time in B = time in A + offset")
+    r.add_argument("--sidecar-a", help="camera A sidecar JSON (per-frame shared-clock times)")
+    r.add_argument("--sidecar-b", help="camera B sidecar JSON (per-frame shared-clock times)")
     r.add_argument("--start-s", type=float, default=0.0)
     r.add_argument("--duration-s", type=float, default=30.0, help="0 = to the end of the video")
     r.add_argument("--roles", default="red,blue", help="comma list from red,blue,referee")
