@@ -53,6 +53,7 @@ class CameraController(private val context: Context) {
 
     private val frameTimesMs = CopyOnWriteArrayList<Long>()
     @Volatile private var collecting = false
+    @Volatile private var recordedDurationMs = 0L
     private var realtimeTimestamps = false
 
     private lateinit var settings: RigSettings
@@ -210,6 +211,7 @@ class CameraController(private val context: Context) {
         this.letter = letter
         this.startAtMs = startAtMs
         frameTimesMs.clear()
+        recordedDurationMs = 0L
 
         val dir = File(context.getExternalFilesDir(null), "recordings").apply { mkdirs() }
         val safeRound = round.ifBlank { "r1" }.replace(Regex("[^A-Za-z0-9]"), "")
@@ -219,14 +221,21 @@ class CameraController(private val context: Context) {
         finalized = done
 
         val options = FileOutputOptions.Builder(file).build()
-        collecting = true
         recording = videoCapture.output
             .prepareRecording(context, options)
             .withAudioEnabled()
             .start(ContextCompat.getMainExecutor(context)) { event ->
-                if (event is VideoRecordEvent.Finalize) {
-                    collecting = false
-                    done.complete(file)
+                when (event) {
+                    // Collect frame times only from the moment recording actually starts, so the
+                    // encoder-startup window (which differs by phone model) stays out of the
+                    // sidecar: frames[0] is the first frame in the file, not an earlier preview
+                    // frame captured before the muxer began writing.
+                    is VideoRecordEvent.Start -> collecting = true
+                    is VideoRecordEvent.Finalize -> {
+                        collecting = false
+                        recordedDurationMs = event.recordingStats.recordedDurationNanos / 1_000_000L
+                        done.complete(file)
+                    }
                 }
             }
         scheduleBeep(startAtMs)
@@ -251,6 +260,7 @@ class CameraController(private val context: Context) {
         recording = null
         val file = finalized?.let { withTimeoutOrNull(10_000) { it.await() } } ?: outputFile
         ?: return null
+        val frames = frameTimesMs.sorted()
         val sidecar = Sidecar(
             recordingId = recordingId,
             round = round,
@@ -260,7 +270,13 @@ class CameraController(private val context: Context) {
             appliedSettings = appliedSettings,
             startAtMs = startAtMs,
             clock = SharedClock.offset,
-            frameTimesMs = frameTimesMs.sorted(),
+            frameTimesMs = frames,
+            // The first time collected is the first frame in the file, since collection begins at
+            // the Start event. The pipeline aligns the cameras on this rather than on a preview
+            // frame.
+            videoFirstFrameMs = frames.firstOrNull() ?: startAtMs,
+            frameTimesSource = "image-analysis-from-record-start",
+            recordedDurationMs = recordedDurationMs,
         )
         return file to sidecar
     }

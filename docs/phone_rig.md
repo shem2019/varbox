@@ -70,8 +70,10 @@ phone, then **Apply to every phone** as the director. Open the **Record** tab on
 ### 4. Clap test
 
 Record a short take with one loud clap near the start. After it processes, open the run's
-`sync.json`: the `sidecar` and `audio` offsets should agree within one frame, and `agree` should be
-`true`. The worker log also prints both offsets and warns when they differ by more than one frame.
+`sync.json`: the `sidecar` and `audio` offsets should agree within one frame and `agree` should be
+`true`, so the `sidecar` offset (anchored on each file's first frame) is used. The worker log prints
+both offsets. If they differ by more than one frame, `agree` is `false` and the pipeline falls back
+to the `audio` offset, which is measured on the files themselves.
 
 ### 5. Deploy the site
 

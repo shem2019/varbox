@@ -167,21 +167,34 @@ def _frame_times_ms(sidecar: dict[str, Any]) -> list[float]:
     return [float(t) for t in frames]
 
 
+def _video_start_ms(sidecar: dict[str, Any]) -> float | None:
+    """Shared-clock time of the first frame in the video file.
+
+    The app records this explicitly as `video_first_frame_ms`, since the frame-time series can
+    start a little before or after the file's first frame depending on how it was captured. Falls
+    back to the first frame time when the field is absent.
+    """
+    value = sidecar.get("video_first_frame_ms")
+    if isinstance(value, (int | float)) and value:
+        return float(value)
+    frames = _frame_times_ms(sidecar)
+    return frames[0] if frames else None
+
+
 def sidecar_offset(
     sidecar_a: dict[str, Any], sidecar_b: dict[str, Any], *, fps: float = 30.0
 ) -> SyncResult:
     """Offset from the sidecars' shared-clock frame times: time in B = time in A + offset.
 
-    The sidecars record each frame's capture time on one shared clock (SNTP), so frame zero of
-    each camera is already an absolute instant; the offset is the gap between them. Confidence is
-    how small the combined clock uncertainty is next to a frame — above ~6 the two frame clocks
-    agree inside half a frame.
+    The sidecars time each camera's first file frame on one shared clock (SNTP), so that instant is
+    absolute; the offset is the gap between the two. Confidence is how small the combined clock
+    uncertainty is next to a frame — above ~6 the two frame clocks agree inside half a frame.
     """
-    frames_a = _frame_times_ms(sidecar_a)
-    frames_b = _frame_times_ms(sidecar_b)
-    if not frames_a or not frames_b:
+    start_a = _video_start_ms(sidecar_a)
+    start_b = _video_start_ms(sidecar_b)
+    if start_a is None or start_b is None:
         return SyncResult(0.0, 0.0, "sidecar-empty")
-    offset_s = (frames_a[0] - frames_b[0]) / 1000.0
+    offset_s = (start_a - start_b) / 1000.0
     unc_a = max(float(sidecar_a.get("clock_uncertainty_ms", 2.0)), 1e-3)
     unc_b = max(float(sidecar_b.get("clock_uncertainty_ms", 2.0)), 1e-3)
     combined_ms = math.hypot(unc_a, unc_b)
@@ -220,14 +233,21 @@ def reconcile(
 ) -> Reconciliation:
     """Pick the offset to use and compare the two methods.
 
-    The sidecar wins when it has real timestamps; the audio offset stays as a second opinion. With
-    only one method available that method is used. Differences above one frame are flagged through
-    `agree` so the caller can warn.
+    The sidecar wins when it has real timestamps and the audio agrees with it. But the audio offset
+    is measured on the video files themselves, so when the two disagree by more than one frame the
+    audio is used instead and `agree` is false, leaving a flag for the caller to warn. With only one
+    method available that method is used.
     """
     use_sidecar = sidecar is not None and sidecar.confidence > 0
     apart = frames_apart(sidecar, audio, fps) if sidecar is not None and audio is not None else None
     agree = apart is None or apart <= 1.0
-    chosen = sidecar if use_sidecar else audio
+    chosen: SyncResult | None
+    if use_sidecar and (audio is None or agree):
+        chosen = sidecar
+    elif audio is not None:
+        chosen = audio
+    else:
+        chosen = sidecar
     if chosen is None:
         chosen = SyncResult(0.0, 0.0, "none")
     return Reconciliation(chosen, sidecar, audio, apart, agree)

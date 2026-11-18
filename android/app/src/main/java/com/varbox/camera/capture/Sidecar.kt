@@ -21,6 +21,9 @@ data class Sidecar(
     val startAtMs: Long,
     val clock: ClockOffset?,
     val frameTimesMs: List<Long>,
+    val videoFirstFrameMs: Long,
+    val frameTimesSource: String,
+    val recordedDurationMs: Long,
 ) {
     fun toJson(): String {
         val o = JSONObject()
@@ -32,6 +35,10 @@ data class Sidecar(
         o.put("width", settings.width)
         o.put("height", settings.height)
         o.put("start_at_ms", startAtMs)
+        // The shared-clock time of the first frame in the file; the GPU lines the cameras up on it.
+        o.put("video_first_frame_ms", videoFirstFrameMs)
+        o.put("frame_times_source", frameTimesSource)
+        o.put("recorded_duration_ms", recordedDurationMs)
         o.put("clock_offset_ms", clock?.offsetMs ?: 0.0)
         o.put("clock_uncertainty_ms", clock?.uncertaintyMs ?: 0.0)
         o.put("settings", JSONObject(settings.toMap()))

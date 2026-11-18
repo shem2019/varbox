@@ -44,14 +44,31 @@ def test_sidecar_offset_without_frames_is_unusable() -> None:
     assert result.method == "sidecar-empty"
 
 
-def test_reconcile_prefers_the_sidecar_and_flags_disagreement() -> None:
+def test_sidecar_offset_anchors_on_the_first_file_frame() -> None:
+    # video_first_frame_ms overrides frames[0], which may begin a little early or late.
+    a = {"video_first_frame_ms": 1000.0, "frames": [900.0, 933.0], "clock_uncertainty_ms": 2.0}
+    b = {"video_first_frame_ms": 1040.0, "frames": [980.0, 1013.0], "clock_uncertainty_ms": 2.0}
+    result = sidecar_offset(a, b, fps=30.0)
+    assert abs(result.offset_s - (-0.040)) < 1e-9
+
+
+def test_reconcile_uses_audio_when_it_disagrees_with_the_sidecar() -> None:
+    # The audio is measured on the files; a sidecar that disagrees by many frames is not trusted.
     sidecar = SyncResult(0.040, 10.0, "sidecar-timestamps")
     audio = SyncResult(0.200, 8.0, "audio-onset-xcorr")  # 0.16 s apart at 30 fps = 4.8 frames
     rec = reconcile(sidecar, audio, fps=30.0)
-    assert rec.chosen is sidecar
+    assert rec.chosen is audio
     assert rec.frames_apart is not None and rec.frames_apart > 1.0
     assert rec.agree is False
-    assert rec.to_dict()["method"] == "sidecar-timestamps"
+    assert rec.to_dict()["method"] == "audio-onset-xcorr"
+
+
+def test_reconcile_keeps_the_sidecar_when_audio_agrees() -> None:
+    sidecar = SyncResult(0.040, 10.0, "sidecar-timestamps")
+    audio = SyncResult(0.052, 8.0, "audio-onset-xcorr")  # 0.012 s apart at 30 fps ≈ 0.36 frames
+    rec = reconcile(sidecar, audio, fps=30.0)
+    assert rec.chosen is sidecar
+    assert rec.agree is True
 
 
 def test_reconcile_falls_back_to_audio_without_a_sidecar() -> None:
