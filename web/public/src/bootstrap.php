@@ -327,11 +327,11 @@ function asset(string $file): string
     return $cache[$file];
 }
 
-/** Import map pinning the dashboard's modules to their fingerprinted URLs. */
-function module_import_map(): string
+/** Import map pinning a page's modules (the dashboard's by default) to their fingerprinted URLs. */
+function module_import_map(array $files = ['app.js', 'layers.js', 'viewer4d.js', 'meshdata.js']): string
 {
     $map = [];
-    foreach (['app.js', 'layers.js', 'viewer4d.js', 'meshdata.js'] as $file) {
+    foreach ($files as $file) {
         $map['/assets/' . $file] = asset($file);
     }
     return '<script type="importmap">' . json_encode(['imports' => $map], JSON_UNESCAPED_SLASHES) . '</script>';

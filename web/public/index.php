@@ -18,6 +18,11 @@ if (PHP_SAPI === 'cli-server' && $path !== '/' && is_file(__DIR__ . $path)) {
     return false;
 }
 
+// The shared clock phones and the sync-flash page measure against. It answers before anything
+// else runs, so the time between receiving and replying stays as small as possible.
+if ($path === '/api/clock') {
+    clock_reply();
+}
 if (str_starts_with($path, '/api/worker/')) {
     worker_api(substr($path, strlen('/api/worker/')), $method);
 }
@@ -41,6 +46,8 @@ $view = match (true) {
     $path === '/login' => 'login',
     $path === '/setup' => 'setup',
     $path === '/privacy' => 'privacy',
+    $path === '/camera' => 'camera',
+    $path === '/sync-flash' => 'sync_flash',
     $path === '/app' || str_starts_with($path, '/app/') => 'app',
     default => '404',
 };

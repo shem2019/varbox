@@ -382,29 +382,38 @@ async function jobsPage() {
 
 // ------------------------------------------------------------------ GPU
 // ------------------------------------------------------------------ team
-function showPairingQr(pairing, name) {
+function showPairingQr(cameraUrl, pairing, name) {
   const d = document.createElement('dialog');
   d.className = 'qr-dialog';
   let qr = '';
   try {
     if (window.qrcode) {
       const code = window.qrcode(0, 'M');
-      code.addData(pairing);
+      code.addData(cameraUrl);
       code.make();
       qr = `<div class="qr">${code.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div>`;
     }
   } catch (err) { qr = ''; }
   d.innerHTML = `<h3>Add ${esc(name)}</h3>
-    <p class="muted">Open VAR Box Camera on the phone and scan this to sign it in.</p>
-    ${qr || '<p class="muted">Copy the pairing text below into the app.</p>'}
-    <textarea class="input mono" rows="3" readonly style="width:100%;resize:none">${esc(pairing)}</textarea>
-    <p class="muted" style="font-size:13px">The token is shown only now. Lose it, and you remove the phone and add it again.</p>
-    <div class="actions"><button class="btn" value="copy">Copy text</button><button class="btn primary" value="ok">Done</button></div>`;
+    <p class="muted">Scan this with the phone's camera. It opens VAR Box Camera in the browser, signed in as ${esc(name)}. Use Chrome on Android.</p>
+    ${qr || '<p class="muted">Open the link below on the phone.</p>'}
+    <textarea class="input mono" rows="3" readonly style="width:100%;resize:none">${esc(cameraUrl)}</textarea>
+    <details style="margin-top:8px"><summary class="muted">Android app instead</summary>
+      <p class="muted" style="font-size:13px">Paste this pairing text into the VAR Box Camera app.</p>
+      <textarea class="input mono" rows="3" readonly style="width:100%;resize:none">${esc(pairing)}</textarea>
+      <button class="btn sm" value="copy-pairing">Copy pairing text</button>
+    </details>
+    <p class="muted" style="font-size:13px">The link is shown only now. Lose it, and you remove the phone and add it again.</p>
+    <div class="actions"><button class="btn" value="copy">Copy link</button><button class="btn primary" value="ok">Done</button></div>`;
   document.body.append(d);
   d.addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.value === 'copy') { try { await navigator.clipboard.writeText(pairing); toast('Pairing text copied'); } catch (err) { /* select by hand */ } return; }
+    if (b.value === 'copy' || b.value === 'copy-pairing') {
+      const text = b.value === 'copy' ? cameraUrl : pairing;
+      try { await navigator.clipboard.writeText(text); toast(b.value === 'copy' ? 'Camera link copied' : 'Pairing text copied'); } catch (err) { /* select by hand */ }
+      return;
+    }
     d.close(); d.remove();
   });
   d.showModal();
@@ -439,7 +448,7 @@ async function teamPage() {
       </form>` : ''}
       <div class="card team-add phones">
         <h3>Phones</h3>
-        <p class="muted" style="margin-top:0">Each phone in the camera rig signs in with its own upload token. Add a phone, scan the QR in VAR Box Camera, and its recordings upload here.</p>
+        <p class="muted" style="margin-top:0">Each phone in the camera rig signs in with its own upload token. Add a phone and scan the QR with its camera: it opens VAR Box Camera in the browser, and its recordings upload here.</p>
         <div class="phone-list">${phones.length ? phones.map((p) => `
           <div class="team-row">
             <span class="avatar">📷</span>
@@ -454,7 +463,7 @@ async function teamPage() {
       if (name === null) return;
       try {
         const res = await api('phones', { method: 'POST', body: { name: name.trim() || 'Phone' } });
-        showPairingQr(res.pairing, res.phone.name);
+        showPairingQr(res.camera_url, res.pairing, res.phone.name);
         draw();
       } catch (err) { toast(err.message, 'error'); }
     };

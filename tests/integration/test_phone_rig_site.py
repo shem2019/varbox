@@ -192,3 +192,68 @@ def test_phone_recording_becomes_pending_task_and_worker_claim_has_sidecars(
         json={"rec_uid": "rec-999", "letter": "A", "name": "x.mp4", "size": 10},
     )
     assert r.status_code == 401, r.text
+
+
+def test_web_camera_clock_resume_and_sync_test_download(site: dict[str, object]) -> None:
+    base = str(site["base"])
+    owner = _owner_session(base)
+
+    # The shared clock answers with the server's receive and reply times in milliseconds.
+    before = time.time() * 1000
+    clock = requests.get(base + "/api/clock").json()
+    after = time.time() * 1000
+    assert before - 5 <= clock["t1"] <= clock["t2"] <= after + 5
+
+    # Adding a phone gives the camera link; the token rides in the fragment.
+    r = owner.post(base + "/api/phones", json={"name": "Phone A"})
+    token = json.loads(r.json()["pairing"])["token"]
+    assert r.json()["camera_url"] == f"https://varbox.example/camera#{token}"
+    phone = {"Authorization": f"Bearer {token}"}
+    for page in ("/camera", "/sync-flash"):
+        assert requests.get(base + page).status_code == 200
+
+    # The web camera sends the sidecar first, then the video, resuming from the server's count.
+    body = bytes(range(256)) * 12
+    r = requests.post(
+        base + "/api/phone/uploads",
+        headers=phone,
+        json={"rec_uid": "sync-test", "letter": "A", "size": len(body), "expected_cameras": 2},
+    )
+    upload_id = int(r.json()["upload"]["id"])
+    sidecar = {"frame_times_source": "web-videoframe-capture", "fps": 30, "frames": [1.5, 34.8]}
+    r = requests.put(
+        base + f"/api/phone/uploads/{upload_id}/sidecar", headers=phone, data=json.dumps(sidecar)
+    )
+    assert r.status_code == 200, r.text
+    status = requests.get(base + f"/api/phone/uploads/{upload_id}", headers=phone).json()
+    assert status == {"received": 0, "size": len(body), "status": "receiving", "sidecar": True}
+
+    r = requests.put(
+        base + f"/api/phone/uploads/{upload_id}?offset=0", headers=phone, data=body[:1000]
+    )
+    assert r.json()["received"] == 1000
+    # After a drop the phone asks where to carry on.
+    received = requests.get(base + f"/api/phone/uploads/{upload_id}", headers=phone).json()
+    assert received["received"] == 1000
+    r = requests.put(
+        base + f"/api/phone/uploads/{upload_id}?offset=1000", headers=phone, data=body[1000:]
+    )
+    assert r.json() == {"received": len(body), "status": "ready"}
+
+    # Another phone cannot read this phone's upload.
+    other = owner.post(base + "/api/phones", json={"name": "Phone B"})
+    other_token = json.loads(other.json()["pairing"])["token"]
+    r = requests.get(
+        base + f"/api/phone/uploads/{upload_id}", headers={"Authorization": f"Bearer {other_token}"}
+    )
+    assert r.status_code == 403
+
+    # The sync test fetches a take's cameras and sidecars with the worker token.
+    worker = {"Authorization": f"Bearer {site['worker_token']}"}
+    info = requests.get(base + "/api/worker/recordings/sync-test", headers=worker).json()
+    assert [c["letter"] for c in info["cameras"]] == ["A"]
+    assert info["cameras"][0]["sidecar"]["frame_times_source"] == "web-videoframe-capture"
+    video = requests.get(base + f"/api/worker/uploads/{upload_id}", headers=worker)
+    assert video.content == body
+    assert requests.get(base + "/api/worker/recordings/nope", headers=worker).status_code == 404
+    assert requests.get(base + "/api/worker/recordings/sync-test").status_code == 401

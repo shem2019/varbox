@@ -340,9 +340,11 @@ function user_api(string $route, string $method): never
         $db->prepare('INSERT INTO phones (name, token_hash, created_by, created_at) VALUES (?, ?, ?, ?)')
             ->execute([$name, hash('sha256', $token), $user['id'], now()]);
         $id = (int) $db->lastInsertId();
-        // The token is shown once, inside a QR the app scans; only its hash is stored.
+        // The token is shown once, inside a QR the phone scans; only its hash is stored. The camera
+        // link opens the web camera with the token in the fragment, which never reaches the server.
         json_out([
             'phone' => ['id' => $id, 'name' => $name],
+            'camera_url' => site_origin() . '/camera#' . $token,
             'pairing' => json_encode([
                 'v' => 1,
                 'kind' => 'varbox-phone',
@@ -576,6 +578,29 @@ function worker_api(string $route, string $method): never
         }
         json_out(['job' => $out]);
     }
+    // A recording's cameras by its take name, with their sidecars: what the sync test measures.
+    if (preg_match('#^recordings/([A-Za-z0-9_.\-]+)$#', $route, $m) && $method === 'GET') {
+        $stmt = $db->prepare('SELECT * FROM recordings WHERE rec_uid = ?');
+        $stmt->execute([$m[1]]);
+        $rec = $stmt->fetch();
+        if (!$rec) {
+            fail('No recording with that take name.', 404);
+        }
+        $cams = $db->prepare('SELECT * FROM recording_cameras WHERE recording_id = ? ORDER BY letter');
+        $cams->execute([$rec['id']]);
+        $out = [];
+        foreach ($cams->fetchAll() as $c) {
+            $u = find('uploads', (int) $c['upload_id']);
+            $out[] = [
+                'letter' => $c['letter'],
+                'upload_id' => (int) $u['id'],
+                'status' => $u['status'],
+                'size' => (int) $u['size'],
+                'sidecar' => $u['sidecar'] ? json_decode($u['sidecar'], true) : null,
+            ];
+        }
+        json_out(['recording' => ['rec_uid' => $rec['rec_uid'], 'title' => $rec['title']], 'cameras' => $out]);
+    }
     if (preg_match('#^uploads/(\d+)$#', $route, $m)) {
         send_storage_file('uploads/' . (int) $m[1] . '.bin', true);
     }
@@ -638,6 +663,19 @@ function worker_api(string $route, string $method): never
         json_out(['ok' => true]);
     }
     fail('Unknown worker request.', 404);
+}
+
+/**
+ * Server time for an NTP-style exchange: when PHP received the request and when it replies, both
+ * in milliseconds with microsecond precision. A client takes many of these and keeps the fastest.
+ */
+function clock_reply(): never
+{
+    $received = (float) ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true)) * 1000.0;
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    echo json_encode(['t1' => $received, 't2' => microtime(true) * 1000.0]);
+    exit;
 }
 
 /** The phone that owns the request, by its upload token; updates last seen. Rejects otherwise. */
@@ -711,6 +749,21 @@ function phone_api(string $route, string $method): never
              DO UPDATE SET upload_id = excluded.upload_id, device = excluded.device, status = \'receiving\''
         )->execute([$rec['id'], $letter, $uploadId, (string) ($in['device'] ?? ''), now()]);
         json_out(['recording_id' => $rec['rec_uid'], 'upload' => upload_row(find('uploads', $uploadId))]);
+    }
+
+    // How much of an upload has arrived, so a phone resumes where it stopped after a drop.
+    if (preg_match('#^uploads/(\d+)$#', $route, $m) && $method === 'GET') {
+        $row = find('uploads', (int) $m[1]);
+        if ((int) $row['phone_id'] !== (int) $phone['id']) {
+            fail('That upload belongs to another phone.', 403);
+        }
+        $file = storage_path('uploads/' . $row['id'] . '.bin');
+        json_out([
+            'received' => is_file($file) ? (int) filesize($file) : 0,
+            'size' => (int) $row['size'],
+            'status' => $row['status'],
+            'sidecar' => $row['sidecar'] !== null && $row['sidecar'] !== '',
+        ]);
     }
 
     if (preg_match('#^uploads/(\d+)$#', $route, $m) && $method === 'PUT') {
