@@ -1,7 +1,7 @@
 // VAR Box web camera: any phone records for the rig from a link, with every frame stamped on a
 // clock shared with the other phones, and the take kept on the phone until it has uploaded.
 
-import { SharedClock } from '/assets/camera/clock.js';
+import { RigClock } from '/assets/camera/peer.js';
 import { Uploader } from '/assets/camera/upload.js';
 
 const TOKEN_KEY = 'varbox.camera.token';
@@ -12,7 +12,7 @@ const state = {
   token: null,
   phone: null,
   stream: null,
-  clock: new SharedClock('/api/clock'),
+  clock: null,
   worker: null,
   recording: false,
   stopping: false,
@@ -111,30 +111,38 @@ function showNote(text, kind = '') {
 
 function renderClock() {
   const el = $('#sync');
-  if (!state.clock.ready) { el.textContent = 'Measuring the clock…'; el.className = 'sync'; return; }
-  const u = state.clock.uncertainty;
+  const c = state.clock;
+  if (!c || !c.ready) { el.textContent = 'Measuring the clock…'; el.className = 'sync'; return; }
+  const others = c.peers.filter((p) => p.session !== c.session).length;
   const halfFrame = 500 / prefs().fps;
-  const good = u <= halfFrame;
-  el.textContent = good
-    ? `Synced ±${u.toFixed(1)} ms`
-    : `Sync ±${u.toFixed(0)} ms is too loose for ${prefs().fps} fps. Move to Wi-Fi.`;
+  const u = c.uncertainty;
+  let text;
+  let good;
+  if (c.mode === 'reference') {
+    text = others ? `Clock reference for the rig (${others} other phone${others > 1 ? 's' : ''} joined)` : 'Clock reference for the rig. Open the camera on the other phones.';
+    good = true;
+  } else if (c.mode === 'peer') {
+    good = u <= halfFrame;
+    text = `Synced to ${c.referenceName || 'the reference phone'} ±${u.toFixed(1)} ms`;
+  } else {
+    good = u <= halfFrame;
+    text = `Server clock ±${u.toFixed(0)} ms. Put the phones on the same Wi-Fi to sync them directly.`;
+  }
+  el.textContent = text;
   el.className = 'sync ' + (good ? 'good' : 'bad');
 }
 
-async function startClock() {
-  renderClock();
-  try {
-    await state.clock.measure(40);
-  } catch (err) {
-    $('#sync').textContent = 'Cannot reach VAR Box to measure the clock.';
-    $('#sync').className = 'sync bad';
-  }
-  state.clock.keepMeasuring(10000, 16);
+function startClock() {
+  state.clock = new RigClock(state.token);
   state.clock.onChange((m) => {
     renderClock();
-    state.worker?.postMessage({ type: 'clock', measurement: m });
+    if (m) state.worker?.postMessage({ type: 'clock', measurement: m });
   });
   renderClock();
+  state.clock.start().catch(() => {
+    $('#sync').textContent = 'Cannot reach VAR Box to measure the clock.';
+    $('#sync').className = 'sync bad';
+  });
 }
 
 // ------------------------------------------------------------------ camera
@@ -206,6 +214,7 @@ async function startTake() {
 
   const name = takeName(p);
   const [width, height] = RES[p.res];
+  state.clock.lock();
   state.take = { name, ...p, startAt: state.clock.now() };
   const worker = new Worker(document.body.dataset.worker, { type: 'module' });
   state.worker = worker;
@@ -221,6 +230,7 @@ async function startTake() {
     settings: { width, height, fps: p.fps },
     applied: { ...settings, locked: locks.locked, refused: locks.refused },
     capture_route: route,
+    clock: { mode: state.clock.mode, reference: state.clock.referenceName, reference_session: state.clock.reference },
   };
   const msg = {
     type: 'start', name, meta, fps: p.fps, bitrate: BITRATE[`${p.res}-${p.fps}`],
@@ -290,6 +300,7 @@ function stopTake(interrupted = false) {
 }
 
 function finishTake(m) {
+  state.clock.unlock();
   const t = state.take;
   state.procTrack?.stop();
   state.procAudio?.stop();
@@ -360,7 +371,7 @@ async function boot() {
   startClock();
   openCamera().catch((err) => showNote('The camera did not open: ' + err.message, 'warn'));
 
-  $('#record').onclick = () => (state.recording ? stopTake(false) : startTake().catch((err) => showNote(err.message, 'warn')));
+  $('#record').onclick = () => (state.recording ? stopTake(false) : startTake().catch((err) => { state.clock?.unlock(); showNote(err.message, 'warn'); }));
   for (const id of ['#res', '#fps']) {
     $(id).onchange = () => { if (!state.recording) openCamera().catch(() => {}); renderClock(); };
   }

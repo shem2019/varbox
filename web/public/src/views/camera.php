@@ -1,5 +1,5 @@
 <?php
-$cameraModules = module_import_map(['camera/camera.js', 'camera/clock.js', 'camera/upload.js']);
+$cameraModules = module_import_map(['camera/camera.js', 'camera/clock.js', 'camera/peer.js', 'camera/upload.js']);
 ?><!doctype html>
 <html lang="en">
 <head>
