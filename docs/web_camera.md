@@ -10,10 +10,21 @@ cameras line up by clock alone, however loud the arena is.
   Scanning it with the phone's camera opens the page signed in as that phone. The token sits in
   the link's fragment, which never reaches the server, and the page removes it from the address
   bar.
-- **Shared clock:** the phone exchanges 40 timestamps with `/api/clock` and keeps the fastest
-  quarter: the offset is their median and the uncertainty half the fastest round trip. It
-  re-measures every 10 s, and the sidecar keeps every measurement so drift is corrected per frame.
-  The page shows "Synced ±N ms" in green when the uncertainty is within half a frame.
+- **Shared clock, phone to phone:** the phones sync to each other over the local network, since
+  the server is about 250 ms round trip from Kenya and its clock promises only about ±120 ms.
+  - Every camera page polls `/api/phone/peer` once a second to find the others. The page that
+    joined first is the clock reference.
+  - The reference measures its offset to the server once and fixes it as K. The rig's shared
+    time is the reference's own clock plus K.
+  - Every other phone opens a direct WebRTC link to the reference, using local addresses only,
+    and sends 40 timestamp pings 25 ms apart. The fastest quarter give the offset (their median)
+    and the uncertainty (half the fastest round trip). It re-measures every 10 s.
+  - The phones must share a Wi-Fi network or one phone's hotspot. A phone that cannot reach the
+    reference within 8 s uses the server clock instead and says so.
+  - A take holds the clock steady from Record to save, and the sidecar keeps every measurement
+    (drift is corrected per frame) and `clock.mode`: `reference`, `peer` or `server`.
+  - The page shows "Synced to Phone A ±N ms", "Clock reference for the rig", or "Server clock
+    ±N ms", green when the uncertainty is within half a frame.
 - **Recording:** a worker takes each camera frame (`MediaStreamTrackProcessor`), encodes it
   itself (WebCodecs, H.264) and writes a fragmented MP4 to the phone's own storage as it records.
   The MP4 timestamps are the frames' capture times. The sidecar keeps the native app's format and
@@ -35,8 +46,9 @@ The test measures how closely two phones' stamps agree, with light rather than s
 
 1. Deploy, then on a laptop open https://varbox.guestpassvms.com/sync-flash full screen. It draws
    the shared clock as a code that changes 60 times a second.
-2. Add two phones on the Team page and open each camera link. Give both the same **Take** name
-   (for example `sync-wifi`), set cameras A and B, and choose the frame rate to test.
+2. Add two phones on the Team page, join both to the same Wi-Fi and open each camera link. Wait
+   until the second phone shows "Synced to" the first. Give both the same **Take** name (for
+   example `sync-wifi`), set cameras A and B, and choose the frame rate to test.
 3. Point both phones at the laptop screen so the code fills most of each frame. Press Record on
    both, film for 30 seconds, then press Stop. Both takes upload on their own.
 4. Run the tool with the site's worker token:
@@ -46,8 +58,9 @@ The test measures how closely two phones' stamps agree, with light rather than s
    .venv/bin/python -m boxing_analytics.mesh4d.syncflash --server https://varbox.guestpassvms.com --take sync-wifi
    ```
 
-5. Repeat with one phone on mobile data (take `sync-mobile`), and with an iPhone if one is to be
-   used.
+5. Repeat on one phone's hotspot (take `sync-hotspot`), and with an iPhone if one is to be used.
+   An arena Wi-Fi that keeps devices apart (client isolation) leaves the phones on the server
+   clock; a hotspot avoids it.
 
 The tool prints PASS when the median difference between the two phones is within one frame and
 95% of frame pairs are within two, and writes the details to `sync_test.json`:
@@ -64,3 +77,10 @@ A browser-only run on 19 November recorded two canvas streams of the flash code 
 whole path (recorder, phone storage, upload, tool). Both files decoded 180 of 180 frames,
 matching their sidecars, and the two agreed to −0.2 ms. That run checks the software; the phone
 test measures the cameras.
+
+The phone-to-phone clock was checked the same way on 19 November: two rig clocks in Chrome on one
+laptop, against a local copy of the site. The second linked to the first within 5 s and measured
+±0.25 ms, with an offset 0.03 ms from the reference's (0 is right on one machine). Chrome on that
+laptop could not resolve the `.local` names it gives local addresses on a page without camera
+access, so the run rewrote them to 127.0.0.1. On the camera page Chrome shares real local
+addresses once camera access is granted.
