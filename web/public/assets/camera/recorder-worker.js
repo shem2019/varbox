@@ -5,7 +5,7 @@
 // the first frame, and the sidecar gives every frame's capture time on the shared clock, so the
 // cameras line up by clock however loud the arena is.
 
-import { Muxer, StreamTarget } from '/assets/vendor/mp4-muxer-5.2.2/mp4-muxer.mjs';
+import { Muxer, StreamTarget } from '/assets/vendor/mp4-muxer-5.2.2/mp4-muxer.js';
 
 const KEYFRAME_SECONDS = 2;
 const SIDECAR_EVERY_MS = 2000;
