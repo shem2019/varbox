@@ -145,6 +145,25 @@ function migrate(PDO $pdo): void
     ensure_column($pdo, 'users', 'google_sub', 'TEXT');
     $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_email ON users(google_email)');
     $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)');
+    // Phones on the camera page announce themselves and pass WebRTC offers and answers through
+    // here, so they can connect directly and sync their clocks to each other. Rows live seconds.
+    $pdo->exec(<<<SQL
+        CREATE TABLE IF NOT EXISTS peer_sessions (
+            session TEXT PRIMARY KEY,
+            phone_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            joined_at REAL NOT NULL,
+            seen_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS peer_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            to_session TEXT NOT NULL,
+            from_session TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_peer_signals_to ON peer_signals(to_session);
+    SQL);
 }
 
 /** Add a column if an earlier schema lacked it, so existing databases upgrade in place. */

@@ -5,6 +5,10 @@ declare(strict_types=1);
 
 const CHUNK_LIMIT = 16 * 1024 * 1024;
 const WORKER_ONLINE_SECONDS = 60;
+const PEER_SESSION_SECONDS = 15;
+const PEER_SIGNAL_SECONDS = 60;
+const PEER_SIGNAL_BYTES = 16384;
+const PEER_SIGNALS_PER_POLL = 20;
 
 function owner_id(): int
 {
@@ -726,6 +730,10 @@ function phone_api(string $route, string $method): never
         json_out(['ok' => true, 'phone' => ['id' => (int) $phone['id'], 'name' => $phone['name']]]);
     }
 
+    if ($route === 'peer' && $method === 'POST') {
+        peer_poll($phone, $in);
+    }
+
     // Register (or update) a recording, then open an upload slot for this phone's camera.
     if ($route === 'uploads' && $method === 'POST') {
         $recUid = trim((string) ($in['rec_uid'] ?? ''));
@@ -796,6 +804,59 @@ function phone_api(string $route, string $method): never
     }
 
     fail('Unknown phone request.', 404);
+}
+
+/**
+ * One poll of the camera page's rig link: announce this page, send WebRTC signals to other pages,
+ * and collect the ones addressed to it. The page that joined first is the clock reference.
+ */
+function peer_poll(array $phone, array $in): never
+{
+    $session = (string) ($in['session'] ?? '');
+    if (!preg_match('/^[a-f0-9]{16,64}$/', $session)) {
+        fail('Give a session id.');
+    }
+    $db = db();
+    $t = microtime(true);
+    $db->prepare('DELETE FROM peer_sessions WHERE seen_at < ?')->execute([$t - PEER_SESSION_SECONDS]);
+    $db->prepare('DELETE FROM peer_signals WHERE created_at < ?')->execute([$t - PEER_SIGNAL_SECONDS]);
+    $db->prepare(
+        'INSERT INTO peer_sessions (session, phone_id, name, joined_at, seen_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(session) DO UPDATE SET seen_at = excluded.seen_at'
+    )->execute([$session, (int) $phone['id'], (string) $phone['name'], $t, $t]);
+
+    $live = $db->query('SELECT session FROM peer_sessions')->fetchAll(PDO::FETCH_COLUMN);
+    $signals = is_array($in['signals'] ?? null) ? array_slice($in['signals'], 0, PEER_SIGNALS_PER_POLL) : [];
+    $insert = $db->prepare(
+        'INSERT INTO peer_signals (to_session, from_session, body, created_at) VALUES (?, ?, ?, ?)'
+    );
+    foreach ($signals as $sig) {
+        $to = (string) ($sig['to'] ?? '');
+        $body = json_encode($sig['data'] ?? null, JSON_UNESCAPED_SLASHES);
+        if ($to === $session || !in_array($to, $live, true) || $body === false || strlen($body) > PEER_SIGNAL_BYTES) {
+            continue;
+        }
+        $insert->execute([$to, $session, $body, $t]);
+    }
+
+    $peers = $db->query('SELECT session, name, joined_at FROM peer_sessions ORDER BY joined_at, session')->fetchAll();
+    $inbox = $db->prepare('SELECT id, from_session, body FROM peer_signals WHERE to_session = ? ORDER BY id');
+    $inbox->execute([$session]);
+    $rows = $inbox->fetchAll();
+    if ($rows) {
+        $ids = implode(',', array_map(fn ($r) => (int) $r['id'], $rows));
+        $db->exec("DELETE FROM peer_signals WHERE id IN ($ids)");
+    }
+    json_out([
+        'self' => $session,
+        'reference' => $peers[0]['session'] ?? $session,
+        'peers' => array_map(fn ($p) => [
+            'session' => $p['session'],
+            'name' => $p['name'],
+            'joined_at' => (float) $p['joined_at'],
+        ], $peers),
+        'inbox' => array_map(fn ($r) => ['from' => $r['from_session'], 'data' => json_decode($r['body'], true)], $rows),
+    ]);
 }
 
 function find_or_make_recording(string $recUid, array $in): array

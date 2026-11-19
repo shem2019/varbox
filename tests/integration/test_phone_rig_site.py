@@ -257,3 +257,65 @@ def test_web_camera_clock_resume_and_sync_test_download(site: dict[str, object])
     assert video.content == body
     assert requests.get(base + "/api/worker/recordings/nope", headers=worker).status_code == 404
     assert requests.get(base + "/api/worker/recordings/sync-test").status_code == 401
+
+
+def test_rig_link_names_the_first_page_reference_and_relays_signals_once(
+    site: dict[str, object],
+) -> None:
+    base = str(site["base"])
+    owner = _owner_session(base)
+    tokens = []
+    for name in ("Phone A", "Phone B"):
+        r = owner.post(base + "/api/phones", json={"name": name})
+        tokens.append(json.loads(r.json()["pairing"])["token"])
+
+    def poll(token: str, session: str, signals: list[dict[str, object]] | None = None) -> dict:
+        r = requests.post(
+            base + "/api/phone/peer",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"session": session, "signals": signals or []},
+        )
+        assert r.status_code == 200, r.text
+        return dict(r.json())
+
+    a, b = "a" * 32, "b" * 32
+    first = poll(tokens[0], a)
+    assert first["reference"] == a and [p["name"] for p in first["peers"]] == ["Phone A"]
+    second = poll(tokens[1], b, [{"to": a, "data": {"type": "offer", "sdp": "v=0"}}])
+    assert second["reference"] == a
+    assert [p["session"] for p in second["peers"]] == [a, b]
+
+    # The reference receives the offer once, then its inbox is empty.
+    got = poll(tokens[0], a)
+    assert got["inbox"] == [{"from": b, "data": {"type": "offer", "sdp": "v=0"}}]
+    assert poll(tokens[0], a)["inbox"] == []
+
+    # Signals to unknown pages and oversize bodies are dropped; a bad session id is refused.
+    poll(tokens[1], b, [{"to": "c" * 32, "data": 1}, {"to": a, "data": "x" * 20000}])
+    assert poll(tokens[0], a)["inbox"] == []
+    r = requests.post(
+        base + "/api/phone/peer",
+        headers={"Authorization": f"Bearer {tokens[0]}"},
+        json={"session": "nope"},
+    )
+    assert r.status_code == 400
+    assert requests.post(base + "/api/phone/peer", json={"session": a}).status_code == 401
+
+
+def test_rig_link_drops_a_page_unseen_for_fifteen_seconds(site: dict[str, object]) -> None:
+    base = str(site["base"])
+    storage = site["storage"]
+    assert isinstance(storage, Path)
+    owner = _owner_session(base)
+    r = owner.post(base + "/api/phones", json={"name": "Phone A"})
+    token = json.loads(r.json()["pairing"])["token"]
+    phone = {"Authorization": f"Bearer {token}"}
+    a, b = "a" * 32, "b" * 32
+    requests.post(base + "/api/phone/peer", headers=phone, json={"session": a})
+    # Age page A by 20 s, as if its phone had gone away.
+    import sqlite3
+
+    with sqlite3.connect(storage / "varbox.sqlite") as db:
+        db.execute("UPDATE peer_sessions SET seen_at = seen_at - 20, joined_at = joined_at - 20")
+    out = requests.post(base + "/api/phone/peer", headers=phone, json={"session": b}).json()
+    assert out["reference"] == b and [p["session"] for p in out["peers"]] == [b]
