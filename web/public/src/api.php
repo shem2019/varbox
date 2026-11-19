@@ -295,7 +295,8 @@ function user_api(string $route, string $method): never
             }
         }
         $title = trim((string) ($in['title'] ?? '')) ?: 'Session ' . date('j M Y, H:i');
-        $fps = in_array((int) ($in['fps'] ?? 30), [30, 60], true) ? (int) $in['fps'] : 30;
+        $fps = (int) ($in['fps'] ?? 30);
+        $fps = in_array($fps, [30, 60], true) ? $fps : 30;
         $db->prepare(
             'INSERT INTO jobs (title, camera_a, camera_b, fps, start_s, duration_s, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -753,7 +754,8 @@ function find_or_make_recording(string $recUid, array $in): array
     if ($rec) {
         return $rec;
     }
-    $fps = in_array((int) ($in['fps'] ?? 30), [30, 60], true) ? (int) $in['fps'] : 30;
+    $fps = (int) ($in['fps'] ?? 30);
+    $fps = in_array($fps, [30, 60], true) ? $fps : 30;
     $expected = max(1, min(6, (int) ($in['expected_cameras'] ?? 2)));
     $title = trim((string) ($in['title'] ?? '')) ?: 'Recording ' . date('j M Y, H:i');
     $db->prepare(
